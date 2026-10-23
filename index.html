@@ -58,11 +58,14 @@ import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 // ----------------------------------------------------------------------------
 const MM = 0.001;
 const FORMATS = { '4x5': [120, 95], '5x7': [170, 120], '8x10': [245, 195] }; // image area w × h, mm
+// typical image circle (mm at infinity) of a lens made for the format: diagonal plus room for movements
+const IMAGE_CIRCLE = { '4x5': 220, '5x7': 300, '8x10': 420 };
 
 const P = {
   focal: 150,          // lens focal length, mm
   extension: 156,      // rail distance between standard centres, mm  ("focusing")
   format: '4x5',
+  autoLens: true,      // on format change: focal length = format diagonal, image circle = typical for the format
   frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0,   // deg, deg, mm, mm
   rearTilt: 0,  rearSwing: 0,  rearRise: 0,  rearShift: 0,
   tiltPivot: 'axis',   // 'axis' (about standard centre) or 'base' (about bottom edge)
@@ -75,13 +78,15 @@ const P = {
   eyeRes: 1500,            // tolerable blur subtends 1/eyeRes rad at the eye (~2.3 arcmin)
   coc: 0.1,                // manual circle of confusion on film, mm
   showDof: true, showDofPlanes: false,
+  imageCircle: 220,        // lens image circle at infinity, mm (coverage / vignetting check)
+  showCoverage: true,
   showFov: true, showSharpArea: true, showFullPlane: false,
-  showPlanes: false, showLines: false, showBellows: true, showGround: true,
+  showPlanes: true, showLines: false, showBellows: true, showGround: true,
 };
 
 const COL = {
   posf: 0x4fe07a, posfVirtual: 0xff8a3d, film: 0xffffff, lens: 0x4fa8ff,
-  scheimpflug: 0xff4fd8, hinge: 0xffd84f, axis: 0x9ad8ff, fov: 0xc9a0ff, dof: 0x3ee6ff,
+  scheimpflug: 0xff4fd8, hinge: 0xffd84f, axis: 0x9ad8ff, fov: 0xc9a0ff, dof: 0x3ee6ff, vignette: 0xff5252,
 };
 
 // Circle of confusion on film (mm): tolerable blur on the print, divided by the enlargement.
@@ -175,23 +180,32 @@ function clipLineToBox(line, min, max) {
   return [line.p.clone().addScaledVector(line.dir, t0), line.p.clone().addScaledVector(line.dir, t1)];
 }
 
-function clipPlaneToBox(pl, min, max) {
+// Order coplanar points (with plane normal n) counter-clockwise around their centroid
+function sortAroundCentroid(pts, n) {
+  const ctr = pts.reduce((acc, p) => acc.add(p), new THREE.Vector3()).divideScalar(pts.length);
+  const nn = n.clone().normalize();
+  const e1 = (Math.abs(nn.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).cross(nn).normalize();
+  const e2 = nn.clone().cross(e1);
+  const ang = p => { const r = p.clone().sub(ctr); return Math.atan2(r.dot(e2), r.dot(e1)); };
+  return pts.sort((a, b) => ang(a) - ang(b));
+}
+
+function boxCorners(min, max) {
   const c = [];
   for (let i = 0; i < 8; i++)
     c.push(new THREE.Vector3(i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z));
+  return c;
+}
+
+function clipPlaneToBox(pl, min, max) {
+  const c = boxCorners(min, max);
   const E = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
   const pts = [];
   for (const [i, j] of E) {
     const s0 = sdf(pl, c[i]), s1 = sdf(pl, c[j]);
     if ((s0 < 0) !== (s1 < 0)) pts.push(c[i].clone().lerp(c[j], s0 / (s0 - s1)));
   }
-  if (pts.length < 3) return [];
-  const ctr = pts.reduce((acc, p) => acc.add(p), new THREE.Vector3()).divideScalar(pts.length);
-  const n = pl.n.clone().normalize();
-  const e1 = (Math.abs(n.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).cross(n).normalize();
-  const e2 = n.clone().cross(e1);
-  const ang = p => { const r = p.clone().sub(ctr); return Math.atan2(r.dot(e2), r.dot(e1)); };
-  return pts.sort((a, b) => ang(a) - ang(b));
+  return pts.length < 3 ? [] : sortAroundCentroid(pts, pl.n);
 }
 
 // Sutherland–Hodgman clip of a convex polygon, keeping the side where sdf(pl) >= 0
@@ -202,6 +216,26 @@ function clipPolygonToHalfSpace(pts, pl) {
     if (sa >= 0) out.push(a);
     if ((sa >= 0) !== (sb >= 0)) out.push(a.clone().lerp(b, sa / (sa - sb)));
   }
+  return out;
+}
+
+// Convex polyhedron = list of convex faces (arrays of Vector3, outward order not required)
+function boxPolyhedron(min, max) {
+  const c = boxCorners(min, max);
+  return [[0,1,3,2],[4,6,7,5],[0,4,5,1],[2,3,7,6],[0,2,6,4],[1,5,7,3]].map(ix => ix.map(i => c[i].clone()));
+}
+
+// Clip a convex polyhedron by a half-space (keep sdf >= 0); the cut is closed with a new cap face
+function clipPolyhedron(faces, pl) {
+  const out = [], cap = [];
+  const eps = 1e-7;
+  for (const face of faces) {
+    const clipped = clipPolygonToHalfSpace(face, pl);
+    if (clipped.length >= 3) out.push(clipped);
+    for (const p of clipped)
+      if (Math.abs(sdf(pl, p)) < eps && !cap.some(q => q.distanceToSquared(p) < eps * eps)) cap.push(p);
+  }
+  if (cap.length >= 3) out.push(sortAroundCentroid(cap, pl.n));
   return out;
 }
 
@@ -284,6 +318,27 @@ function polygon(pts, m) {
 function outline(pts, color) {
   const g = new THREE.BufferGeometry().setFromPoints(pts);
   return new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+}
+function polyhedronMesh(faces, m) {
+  const pos = [];
+  for (const fc of faces)
+    for (let i = 1; i < fc.length - 1; i++) pos.push(...fc[0].toArray(), ...fc[i].toArray(), ...fc[i + 1].toArray());
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return new THREE.Mesh(g, m);
+}
+// polygon outline that skips edges lying on a face of the clipping box (those are cuts, not real boundaries)
+function outlineEdges(pts, color, box) {
+  const onFace = (p, q) => ['x', 'y', 'z'].some(k =>
+    [box.min[k], box.max[k]].some(v => Math.abs(p[k] - v) < 1e-6 && Math.abs(q[k] - v) < 1e-6));
+  const segs = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    if (!onFace(a, b)) segs.push(a, b);
+  }
+  if (!segs.length) return new THREE.Group();
+  return new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
 }
 
 function buildStandard(pose, iw, ih, bar, depth, kind) {
@@ -410,8 +465,8 @@ function update() {
   const camBox = { min: new THREE.Vector3(-0.45, -E, -0.6), max: new THREE.Vector3(0.45, E, ext + 0.6) };
 
   const posfColor = virtual ? COL.posfVirtual : COL.posf;
-  // only the real part of each object-space plane (in front of the lens) is drawn
-  const realPart = pl => clipPolygonToHalfSpace(clipPlaneToBox(pl, posfBox.min, posfBox.max), lensPlane);
+  // only the real part of each object-space plane (beyond the front focal plane) is drawn
+  const realPart = pl => clipPolygonToHalfSpace(clipPlaneToBox(pl, posfBox.min, posfBox.max), focalPlane);
   if (posf && P.showFullPlane) {
     const poly = realPart(posf);
     dyn.add(polygon(poly, mat(posfColor, { opacity: P.showSharpArea ? 0.15 : 0.35, basic: true })));
@@ -427,29 +482,37 @@ function update() {
   }
 
   // --- field of view: film gate corners through the lens centre ----------------
-  // The conjugate of the film rectangle is the quadrilateral on the plane of
-  // sharp focus hit by the rays (film corner -> lens centre). That is the part of
-  // the scene that is both inside the frame and in focus.
+  // Chief rays pass through the lens centre undeviated, so the object-space frustum
+  // is bounded by the four planes through the lens centre and the gate edges.
   const gate = [[-1,-1],[1,-1],[1,1],[-1,1]].map(([x, y]) =>
     new THREE.Vector3(x * iw / 2, y * ih / 2, 0).applyQuaternion(rear.quaternion).add(Cr));
-  let sharpQuad = null;
-  if (posf) {
-    const hits = gate.map(g => {
-      const dir = Cl.clone().sub(g);
-      const den = posf.n.dot(dir);
-      if (Math.abs(den) < 1e-12) return null;
-      const t = -sdf(posf, Cl) / den;
-      return t > 0 ? Cl.clone().addScaledVector(dir, t) : null;
-    });
-    if (hits.every(Boolean)) sharpQuad = hits;
+  const rayDirs = gate.map(g => Cl.clone().sub(g).normalize());
+  const insidePt = Cl.clone().multiplyScalar(2).sub(Cr);      // mirror image of the film centre: inside the frustum
+  const frustum = [];
+  for (let i = 0; i < 4; i++) {
+    const pl = planeFrom(Cl, gate[i].clone().sub(Cl).cross(gate[(i + 1) % 4].clone().sub(Cl)));
+    if (sdf(pl, insidePt) < 0) { pl.n.negate(); pl.d = -pl.d; }
+    frustum.push(pl);
   }
+  // lens coverage: a gate corner is vignetted when it lies outside the cone of half-angle atan(IC / 2f)
+  const covAngle = Math.atan(P.imageCircle * MM / 2 / f);
+  const back = nl.clone().negate();
+  const corVig = gate.map(g => Math.acos(Math.min(1, g.clone().sub(Cl).normalize().dot(back))) > covAngle);
+  const nVig = corVig.filter(Boolean).length;
+  // conjugates of the gate corners on the plane of sharp focus (readout only)
+  const hits = posf ? rayDirs.map(d => {
+    const den = posf.n.dot(d), t = Math.abs(den) < 1e-12 ? -1 : -sdf(posf, Cl) / den;
+    return t > 0 ? Cl.clone().addScaledVector(d, t) : null;
+  }) : [];
+  const sharpQuad = hits.length && hits.every(Boolean) ? hits : null;
+
   if (P.showFov) {
-    const rayM = mat(COL.fov, { opacity: 0.85, basic: true }), farM = mat(COL.fov, { opacity: 0.25, basic: true });
-    const far = gate.map(g => Cl.clone().addScaledVector(Cl.clone().sub(g).normalize(), 3 * E));
+    const rayM = mat(COL.fov, { opacity: 0.85, basic: true }), vigM = mat(COL.vignette, { opacity: 0.9, basic: true });
+    const far = rayDirs.map(d => Cl.clone().addScaledVector(d, 3 * E));
     for (let i = 0; i < 4; i++) {
-      dyn.add(tube(gate[i], Cl, 0.0015, rayM));                       // inside the camera
-      dyn.add(tube(Cl, sharpQuad ? sharpQuad[i] : far[i], 0.003, rayM));
-      if (sharpQuad) dyn.add(tube(sharpQuad[i], far[i], 0.002, farM)); // beyond the sharp plane
+      const m = corVig[i] ? vigM : rayM;
+      dyn.add(tube(gate[i], Cl, 0.0015, m));                       // inside the camera
+      dyn.add(tube(Cl, far[i], 0.0025, m));
     }
     const pos = [];
     for (let i = 0; i < 4; i++) pos.push(...Cl.toArray(), ...far[i].toArray(), ...far[(i + 1) % 4].toArray());
@@ -457,40 +520,53 @@ function update() {
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     dyn.add(new THREE.Mesh(g, mat(COL.fov, { opacity: 0.06, basic: true })));
   }
-  if (P.showSharpArea && sharpQuad) {
-    dyn.add(polygon(sharpQuad, mat(posfColor, { opacity: 0.6, basic: true })));
-    dyn.add(outline(sharpQuad, 0xffffff));
+  if (P.showCoverage) {
+    // outline of the coverage cone on the film plane: an ellipse, or a hyperbola branch for strong tilts
+    const M = 96, ring = [];
+    for (let i = 0; i <= M; i++) {
+      const phi = i / M * 2 * Math.PI;
+      const dir = back.clone().multiplyScalar(Math.cos(covAngle))
+        .addScaledVector(B.u, Math.sin(covAngle) * Math.cos(phi)).addScaledVector(B.v, Math.sin(covAngle) * Math.sin(phi));
+      const den = filmPlane.n.dot(dir), t = Math.abs(den) < 1e-9 ? -1 : -sdf(filmPlane, Cl) / den;
+      ring.push(t > 0 && t < 1.5 ? Cl.clone().addScaledVector(dir, t) : null);
+    }
+    const segs = [];
+    for (let i = 0; i < M; i++) if (ring[i] && ring[i + 1]) segs.push(ring[i], ring[i + 1]);
+    if (segs.length) dyn.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs),
+      new THREE.LineBasicMaterial({ color: nVig ? COL.vignette : 0x9a9a9a, transparent: true, opacity: 0.9 })));
+  }
+
+  // --- sharp area in frame: plane of sharp focus ∩ frustum ---------------------
+  // Only the part beyond the front focal plane is real. The area is unbounded when
+  // part of the frame looks past the plane (it leaves through infinity); it is then
+  // cut at the scene box.
+  let sharpPoly = posf ? clipPlaneToBox(posf, posfBox.min, posfBox.max) : [];
+  for (const pl of [...frustum, focalPlane]) sharpPoly = clipPolygonToHalfSpace(sharpPoly, pl);
+  if (P.showSharpArea && sharpPoly.length >= 3) {
+    dyn.add(polygon(sharpPoly, mat(posfColor, { opacity: 0.6, basic: true })));
+    dyn.add(outlineEdges(sharpPoly, 0xffffff, posfBox));
   }
 
   // --- depth of field volume inside the frame ---------------------------------
-  // Along each corner ray the in-focus stretch is [tNear, tFar]; the volume that
-  // is both framed and acceptably sharp is the slab between the near and far quads.
-  const rayDirs = gate.map(g => Cl.clone().sub(g).normalize());
+  // Acceptably sharp <=> |1 - s0| <= k. In image space that is the slab between the
+  // film plane scaled by 1/(1-k) and by 1/(1+k) about the lens centre; its object-
+  // space image is the region between the near and far limit planes (which may wrap
+  // through infinity). Beyond the front focal plane the thin-lens map preserves
+  // convexity, so the in-focus volume in the frame is the scene box clipped by the
+  // frustum sides, the front focal plane and the near / far half-spaces.
+  const sgn = Math.sign(filmL.d);
+  const halfSpaces = [...frustum, focalPlane];
+  if (nearPlane) halfSpaces.push({ n: nearPlane.n.clone().multiplyScalar(-sgn), d: -sgn * nearPlane.d });
+  if (farPlane) halfSpaces.push({ n: farPlane.n.clone().multiplyScalar(sgn), d: sgn * farPlane.d });
+  let dofFaces = boxPolyhedron(posfBox.min, posfBox.max);
+  for (const pl of halfSpaces) { dofFaces = clipPolyhedron(dofFaces, pl); if (!dofFaces.length) break; }
+  if (P.showDof && dofFaces.length) {
+    dyn.add(polyhedronMesh(dofFaces, mat(COL.dof, { opacity: 0.16, basic: true })));
+    for (const face of dofFaces) dyn.add(outlineEdges(face, COL.dof, posfBox));
+  }
   const ivs = rayDirs.map(d => focusInterval(B, filmL, f, k, d));
   const axisIv = focusInterval(B, filmL, f, k, nl);
-  let dofSlab = null;
-  if (ivs.every(Boolean)) {
-    dofSlab = {
-      near: ivs.map((iv, i) => Cl.clone().addScaledVector(rayDirs[i], iv.tNear)),
-      far: ivs.map((iv, i) => Cl.clone().addScaledVector(rayDirs[i], Math.min(iv.tFar, 3 * E))),
-      farInfinite: ivs.some(iv => !Number.isFinite(iv.tFar)),
-    };
-  }
-  if (P.showDof && dofSlab) {
-    const { near, far } = dofSlab;
-    const quads = [near, far];
-    for (let i = 0; i < 4; i++) { const j = (i + 1) % 4; quads.push([near[i], near[j], far[j], far[i]]); }
-    const pos = [];
-    for (const q of quads)
-      pos.push(...q[0].toArray(), ...q[1].toArray(), ...q[2].toArray(), ...q[0].toArray(), ...q[2].toArray(), ...q[3].toArray());
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    dyn.add(new THREE.Mesh(g, mat(COL.dof, { opacity: 0.16, basic: true })));
-    dyn.add(outline(near, COL.dof));
-    dyn.add(outline(far, COL.dof));
-    const edgeM = mat(COL.dof, { opacity: 0.9, basic: true });
-    for (let i = 0; i < 4; i++) dyn.add(tube(near[i], far[i], 0.0025, edgeM));
-  }
+  const dofInfo = { farInfinite: ivs.some(iv => iv && !Number.isFinite(iv.tFar)), missing: ivs.filter(iv => !iv).length };
   if (P.showPlanes) {
     for (const [pl, c] of [[filmPlane, COL.film], [lensPlane, COL.lens]]) {
       const poly = clipPlaneToBox(pl, camBox.min, camBox.max);
@@ -536,9 +612,13 @@ function update() {
     const w = [L(0, 1), L(3, 2)], hh = [L(0, 3), L(1, 2)];
     const rng = v => Math.abs(v[0] - v[1]) < 0.005 * Math.max(v[0], v[1]) ? fmt(v[0]) : `${fmt(Math.min(...v))}–${fmt(Math.max(...v))}`;
     txt += `${sw(COL.fov)}<b>Sharp area in frame</b> (${P.format}, on the plane): ${rng(w)} m wide × ${rng(hh)} m high\n`;
+  } else if (sharpPoly.length >= 3) {
+    txt += `${sw(COL.fov)}<b>Sharp area in frame</b>: the plane leaves the frame through infinity (area cut at the scene extent)\n`;
   } else if (posf) {
     txt += `${sw(COL.fov)}Frame does not meet the plane of sharp focus in front of the lens\n`;
   }
+  txt += `${sw(nVig ? COL.vignette : 0x9a9a9a)}Coverage: image circle ${P.imageCircle} mm (half-angle ${fmt(THREE.MathUtils.radToDeg(covAngle), 1)}°): ` +
+    (nVig ? `<span class="warn">${nVig} frame corner${nVig > 1 ? 's' : ''} outside → vignetting</span>` : 'all frame corners inside') + `\n`;
   const H = f * f / (P.fnumber * coc * MM) + f;    // hyperfocal distance of the untilted lens
   txt += `${sw(COL.dof)}<b>Depth of field</b> f/${P.fnumber}, CoC ${fmt(coc, 3)} mm` +
     (P.cocMode === 'manual' ? '' :
@@ -546,8 +626,8 @@ function update() {
   txt += axisIv
     ? `   on the lens axis ${fmt(axisIv.tNear)} m – ${Number.isFinite(axisIv.tFar) ? fmt(axisIv.tFar) + ' m' : '∞'}   (hyperfocal H = ${fmt(H, 1)} m)\n`
     : `   nothing acceptably sharp along the lens axis\n`;
-  if (dofSlab && dofSlab.farInfinite) txt += `   far limit at ∞ for part of the frame; volume cut at the scene extent\n`;
-  else if (!dofSlab) txt += `   in-focus volume not drawn: a corner ray has no in-focus stretch\n`;
+  if (dofInfo.missing) txt += `   ${dofInfo.missing} frame corner${dofInfo.missing > 1 ? 's' : ''} look past the DoF wedge: nothing sharp there at any distance\n`;
+  if (dofInfo.farInfinite) txt += `   far limit at ∞ for part of the frame; volume cut at the scene extent\n`;
   txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane\n`;
   txt += `${sw(COL.scheimpflug)}Scheimpflug line (film ∩ lens): ${schLine || lensFilmAngle > 1e-6 ? 'present' : 'at infinity (planes parallel)'}\n`;
   txt += `${sw(COL.hinge)}Hinge line: distance from lens J = ${Number.isFinite(J) ? fmt(J) + ' m' : '∞'}` +
@@ -562,21 +642,34 @@ document.getElementById('infoTitle').addEventListener('click', () => infoEl.clas
 // ----------------------------------------------------------------------------
 const gui = new GUI({ title: 'View camera', width: 310 });
 const fL = gui.addFolder('Lens & focus');
-fL.add(P, 'focal', 47, 480, 1).name('focal length (mm)');
+const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
+fL.add(P, 'autoLens').name('auto lens & focus');
 fL.add(P, 'extension', 40, 600, 0.5).name('standard separation (mm)');
-fL.add(P, 'format', Object.keys(FORMATS)).name('format');
+fL.add(P, 'focal', 47, 480, 1).name('focal length (mm)');
+fL.add(P, 'imageCircle', 100, 600, 5).name('image circle at ∞ (mm)');
+const FOCUS_ON_FORMAT_CHANGE = 3000;   // mm from the lens, used to set the separation when the format changes
+// lil-gui runs the panel-wide onChange (the rebuild) before a controller's own handler, so rebuild again here
+formatCtrl.onChange(v => {
+  if (!P.autoLens) return;
+  P.focal = Math.round(Math.hypot(...FORMATS[v]));            // "normal" lens = format diagonal
+  P.imageCircle = IMAGE_CIRCLE[v];
+  const d = FOCUS_ON_FORMAT_CHANGE;                            // thin lens: s = f d / (d - f)
+  P.extension = Math.round(2 * P.focal * d / (d - P.focal)) / 2;
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  update();
+});
 
 const fF = gui.addFolder('Front standard (lens)');
-fF.add(P, 'frontTilt', -45, 45, 0.25).name('tilt ° (+ top forward)');
-fF.add(P, 'frontSwing', -45, 45, 0.25).name('swing ° (+ to left)');
-fF.add(P, 'frontRise', -80, 80, 1).name('rise / fall (mm)');
-fF.add(P, 'frontShift', -80, 80, 1).name('shift (mm)');
+fF.add(P, 'frontTilt', -30, 30, 0.25).name('tilt ° (+ top forward)');
+fF.add(P, 'frontSwing', -30, 30, 0.25).name('swing ° (+ to left)');
+fF.add(P, 'frontRise', -60, 60, 1).name('rise / fall (mm)');
+fF.add(P, 'frontShift', -60, 60, 1).name('shift (mm)');
 
 const fR = gui.addFolder('Rear standard (film)');
-fR.add(P, 'rearTilt', -45, 45, 0.25).name('tilt ° (+ top forward)');
-fR.add(P, 'rearSwing', -45, 45, 0.25).name('swing ° (+ to left)');
-fR.add(P, 'rearRise', -80, 80, 1).name('rise / fall (mm)');
-fR.add(P, 'rearShift', -80, 80, 1).name('shift (mm)');
+fR.add(P, 'rearTilt', -30, 30, 0.25).name('tilt ° (+ top forward)');
+fR.add(P, 'rearSwing', -30, 30, 0.25).name('swing ° (+ to left)');
+fR.add(P, 'rearRise', -60, 60, 1).name('rise / fall (mm)');
+fR.add(P, 'rearShift', -60, 60, 1).name('shift (mm)');
 gui.add(P, 'tiltPivot', ['axis', 'base']).name('tilt pivot');
 
 const fD = gui.addFolder('Depth of field');
@@ -594,6 +687,7 @@ fV.add(P, 'showFullPlane').name('extended plane of sharp focus');
 fV.add(P, 'showDof').name('in-focus volume in frame');
 fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
 fV.add(P, 'showFov').name('field of view rays');
+fV.add(P, 'showCoverage').name('lens coverage on film');
 fV.add(P, 'showPlanes').name('extended film & lens planes');
 fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
 fV.add(P, 'showBellows').name('bellows');

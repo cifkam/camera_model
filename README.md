@@ -19,12 +19,18 @@ the angle of the plane of sharp focus, and the hinge distance J.
   bellows, rail and tripod
 - green: plane of sharp focus (orange when the image distance is below f, i.e. "beyond infinity");
   the bright quadrilateral with a white outline is the part of it that the film gate actually
-  sees (the conjugate image of the film rectangle); the whole plane, the near/far limit planes,
-  the extended film/lens planes and the Scheimpflug/hinge lines are off by default and can be
-  switched on in the Display folder
+  sees (the conjugate image of the film rectangle); the whole plane, the near/far limit planes
+  and the Scheimpflug/hinge lines are off by default and can be switched on in the Display
+  folder, the extended film and lens planes are on by default
 - lavender: field of view, rays from the four film-gate corners through the lens centre; this
   is where the film format and focal length matter, and rear tilt/swing shows up as keystoning
-  of the sharp quadrilateral
+  of the sharp area. The sharp area is the plane clipped by the frustum, so when part of the
+  frame looks past the plane (it "leaves through infinity") the area runs off to the scene
+  extent instead of disappearing; the in-focus volume is likewise the frustum clipped by the
+  near and far half-spaces
+- grey / red ring on the film plane: the lens's coverage (image circle at infinity, set in the
+  Lens folder, projected as a cone from the lens centre). Corner rays and the ring turn red when
+  a frame corner falls outside it, i.e. the movements would vignette
 - faint white / blue: film plane and lens plane extended, so you can see them meet
 - magenta: Scheimpflug line (film plane ∩ lens plane)
 - yellow: hinge line (plane of sharp focus ∩ front focal plane)
