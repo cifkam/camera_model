@@ -75,4 +75,6 @@ uv run python check_optics.py
 - Tilt rotates about the standard's horizontal axis, positive = top of the standard forward
   (for the front standard that is "tilt down"). Swing rotates about the vertical axis.
 - Tilt pivot `axis` rotates about the standard's centre, `base` about its bottom edge.
-- Standard separation is the rail distance between the two standards' nominal centres.
+- Standard separation is the rail distance between the two standards' nominal centres. The lens
+  (front standard) stays fixed in space and focusing slides the rear standard, so changing the
+  separation never moves the field of view's apex.

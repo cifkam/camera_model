@@ -57,6 +57,7 @@ import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 // Parameters (camera dimensions in mm, scene in metres)
 // ----------------------------------------------------------------------------
 const MM = 0.001;
+const MAX_SEPARATION = 600;   // mm, slider limit and rail length
 const FORMATS = { '4x5': [120, 95], '5x7': [170, 120], '8x10': [245, 195] }; // image area w × h, mm
 // typical image circle (mm at infinity) of a lens made for the format: diagonal plus room for movements
 const IMAGE_CIRCLE = { '4x5': 220, '5x7': 300, '8x10': 420 };
@@ -386,7 +387,8 @@ function update() {
   const railY = h - fh / 2 - 0.06;
 
   // --- standards --------------------------------------------------------------
-  const rearNom = new THREE.Vector3(0, h, 0), frontNom = new THREE.Vector3(0, h, ext);
+  // the lens stays fixed in space (z = 0); focusing slides the rear standard along the rail
+  const rearNom = new THREE.Vector3(0, h, -ext), frontNom = new THREE.Vector3(0, h, 0);
   const rear = standardPose(rearNom, P.rearTilt, P.rearSwing, P.rearRise * MM, P.rearShift * MM, fh / 2);
   const front = standardPose(frontNom, P.frontTilt, P.frontSwing, P.frontRise * MM, P.frontShift * MM, fh / 2);
   dyn.add(buildStandard(rear, iw, ih, bar, depth, 'rear'));
@@ -394,19 +396,21 @@ function update() {
 
   // --- rail, posts, tripod ----------------------------------------------------
   const railM = mat(0x2b2d33), postM = mat(0x44474f);
-  const rail = box(0.04, 0.03, ext + 0.24, railM); rail.position.set(0, railY, ext / 2); dyn.add(rail);
+  // fixed monorail: ends at the front standard, long enough for the rear one at maximum separation
+  const RAIL_Z = -0.2, railLen = MAX_SEPARATION * MM + 0.08;
+  const rail = box(0.04, 0.03, railLen, railM); rail.position.set(0, railY, 0.04 - railLen / 2); dyn.add(rail);
   for (const [nom, pose] of [[rearNom, rear], [frontNom, front]]) {
     const top = new THREE.Vector3(pose.position.x, pose.position.y - fh / 2, nom.z);
     const bottom = new THREE.Vector3(pose.position.x, railY + 0.015, nom.z);
     dyn.add(tube(bottom, top, 0.012, postM));
     const foot = box(0.07, 0.02, 0.05, postM); foot.position.set(pose.position.x, railY + 0.025, nom.z); dyn.add(foot);
   }
-  const colTop = new THREE.Vector3(0, railY - 0.02, ext / 2);
-  dyn.add(tube(new THREE.Vector3(0, railY - 0.25, ext / 2), colTop, 0.015, postM));
+  const colTop = new THREE.Vector3(0, railY - 0.02, RAIL_Z);
+  dyn.add(tube(new THREE.Vector3(0, railY - 0.25, RAIL_Z), colTop, 0.015, postM));
   for (let k = 0; k < 3; k++) {
     const a = k * 2 * Math.PI / 3 + Math.PI / 6;
     dyn.add(tube(colTop.clone().add(new THREE.Vector3(0, -0.2, 0)),
-      new THREE.Vector3(0.55 * Math.cos(a), 0, ext / 2 + 0.55 * Math.sin(a)), 0.009, postM));
+      new THREE.Vector3(0.55 * Math.cos(a), 0, RAIL_Z + 0.55 * Math.sin(a)), 0.009, postM));
   }
 
   // --- bellows ----------------------------------------------------------------
@@ -462,7 +466,7 @@ function update() {
 
   const bigBox = { min: new THREE.Vector3(-E, -E, -1), max: new THREE.Vector3(E, E, 2 * E) };
   const posfBox = { min: new THREE.Vector3(-E, 0, -0.6), max: new THREE.Vector3(E, E, 2 * E) };
-  const camBox = { min: new THREE.Vector3(-0.45, -E, -0.6), max: new THREE.Vector3(0.45, E, ext + 0.6) };
+  const camBox = { min: new THREE.Vector3(-0.45, -E, -ext - 0.6), max: new THREE.Vector3(0.45, E, 0.6) };
 
   const posfColor = virtual ? COL.posfVirtual : COL.posf;
   // only the real part of each object-space plane (beyond the front focal plane) is drawn
@@ -644,7 +648,7 @@ const gui = new GUI({ title: 'View camera', width: 310 });
 const fL = gui.addFolder('Lens & focus');
 const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
 fL.add(P, 'autoLens').name('auto lens & focus');
-fL.add(P, 'extension', 40, 600, 0.5).name('standard separation (mm)');
+fL.add(P, 'extension', 40, MAX_SEPARATION, 0.5).name('standard separation (mm)');
 fL.add(P, 'focal', 47, 480, 1).name('focal length (mm)');
 fL.add(P, 'imageCircle', 100, 600, 5).name('image circle at ∞ (mm)');
 const FOCUS_ON_FORMAT_CHANGE = 3000;   // mm from the lens, used to set the separation when the format changes
