@@ -717,6 +717,12 @@ const extCtrl = fL.add(P, 'extension', 40, MAX_SEPARATION, 0.1).name('standard s
 focusCtrl = new LogNumberController(fL, P, 'focusDist', 0.2, FOCUS_SLIDER_CAP, 0.01).name('focus distance (m)').decimals(2);
 fL.add(P, 'focal', 47, 480, 1).name('focal length (mm)');
 fL.add(P, 'imageCircle', 100, 600, 5).name('image circle at ∞ (mm)');
+fL.add({ hyperfocal: () => {
+  const f = P.focal * MM, coc = circleOfConfusion(FORMATS[P.format][0]).coc * MM;
+  setSeparationForFocus(f * f / (P.fnumber * coc) + f);      // H = f² / (N c) + f, from the lens
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  update();
+} }, 'hyperfocal').name('Focus at hyperfocal distance');
 // lil-gui runs the panel-wide onChange (the rebuild) before a controller's own handler, so rebuild again here
 formatCtrl.onChange(v => {
   if (!P.autoLens) return;
