@@ -58,13 +58,16 @@ import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 // ----------------------------------------------------------------------------
 const MM = 0.001;
 const MAX_SEPARATION = 600;   // mm, slider limit and rail length
+const DEFAULT_FOCUS = 3000;   // mm from the lens: initial focus, and the focus set when the format changes
+// standard separation (mm) that focuses a thin lens of focal length f (mm) at distance d (mm)
+const separationFor = (f, d) => Math.round(100 * f * d / (d - f)) / 100;
 const FORMATS = { '4x5': [120, 95], '5x7': [170, 120], '8x10': [245, 195] }; // image area w × h, mm
 // typical image circle (mm at infinity) of a lens made for the format: diagonal plus room for movements
 const IMAGE_CIRCLE = { '4x5': 220, '5x7': 300, '8x10': 420 };
 
 const P = {
   focal: 150,          // lens focal length, mm
-  extension: 156,      // rail distance between standard centres, mm  ("focusing")
+  extension: separationFor(150, DEFAULT_FOCUS),   // rail distance between standard centres, mm ("focusing")
   format: '4x5',
   autoLens: true,      // on format change: focal length = format diagonal, image circle = typical for the format
   frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0,   // deg, deg, mm, mm
@@ -648,17 +651,15 @@ const gui = new GUI({ title: 'View camera', width: 310 });
 const fL = gui.addFolder('Lens & focus');
 const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
 fL.add(P, 'autoLens').name('auto lens & focus');
-fL.add(P, 'extension', 40, MAX_SEPARATION, 0.5).name('standard separation (mm)');
+fL.add(P, 'extension', 40, MAX_SEPARATION, 0.1).name('standard separation (mm)');
 fL.add(P, 'focal', 47, 480, 1).name('focal length (mm)');
 fL.add(P, 'imageCircle', 100, 600, 5).name('image circle at ∞ (mm)');
-const FOCUS_ON_FORMAT_CHANGE = 3000;   // mm from the lens, used to set the separation when the format changes
 // lil-gui runs the panel-wide onChange (the rebuild) before a controller's own handler, so rebuild again here
 formatCtrl.onChange(v => {
   if (!P.autoLens) return;
   P.focal = Math.round(Math.hypot(...FORMATS[v]));            // "normal" lens = format diagonal
   P.imageCircle = IMAGE_CIRCLE[v];
-  const d = FOCUS_ON_FORMAT_CHANGE;                            // thin lens: s = f d / (d - f)
-  P.extension = Math.round(2 * P.focal * d / (d - P.focal)) / 2;
+  P.extension = separationFor(P.focal, DEFAULT_FOCUS);        // not snapped to the slider step: focus is very sensitive here
   gui.controllersRecursive().forEach(c => c.updateDisplay());
   update();
 });
