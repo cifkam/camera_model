@@ -15,6 +15,21 @@
     pointer-events: none; white-space: pre-wrap; font-variant-numeric: tabular-nums;
   }
   #info b { color: #fff; }
+  #infoTitle {
+    pointer-events: auto; cursor: pointer; user-select: none; color: #bbb; font-weight: 600; font-size: 12px;
+    margin: -2px 0 4px; letter-spacing: .02em;
+  }
+  #infoTitle:hover { color: #fff; }
+  #infoTitle::before { content: '▾ '; }
+  #info.closed #infoTitle::before { content: '▸ '; }
+  #info.closed #infoTitle { margin: 0; }
+  #info.closed #infoBody { display: none; }
+  #info.closed { padding: 6px 12px; }
+  @media (max-width: 700px) {
+    #info { left: 8px; right: 8px; bottom: 8px; max-width: none; font-size: 11px; line-height: 1.45; padding: 8px 26px 8px 10px; }
+    #help { display: none; }
+  }
+  @media (pointer: coarse) { #help { display: none; } }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
   .warn { color: #ffb347; }
   #help { position: absolute; left: 12px; top: 12px; color: #aaa; font-size: 12px; pointer-events: none; }
@@ -32,7 +47,7 @@
 </head>
 <body>
 <div id="help">drag: orbit · right-drag: pan · wheel: zoom</div>
-<div id="info"></div>
+<div id="info"><div id="infoTitle">Legend</div><div id="infoBody"></div></div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -537,8 +552,10 @@ function update() {
   txt += `${sw(COL.scheimpflug)}Scheimpflug line (film ∩ lens): ${schLine || lensFilmAngle > 1e-6 ? 'present' : 'at infinity (planes parallel)'}\n`;
   txt += `${sw(COL.hinge)}Hinge line: distance from lens J = ${Number.isFinite(J) ? fmt(J) + ' m' : '∞'}` +
          (lensFilmAngle > 1e-6 ? `  (f / sin α = ${fmt(f / Math.sin(THREE.MathUtils.degToRad(lensFilmAngle)))} m)` : '');
-  infoEl.innerHTML = txt;
+  document.getElementById('infoBody').innerHTML = txt;
 }
+// legend collapses to its title bar and back, like the control panel
+document.getElementById('infoTitle').addEventListener('click', () => infoEl.classList.toggle('closed'));
 
 // ----------------------------------------------------------------------------
 // GUI
@@ -599,6 +616,7 @@ for (const name of Object.keys(presets))
   fP.add({ fn: () => { presets[name](); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'fn').name(name);
 
 gui.onChange(update);
+if (matchMedia('(max-width: 700px)').matches) gui.close();   // phones: start with the 3D view, tap the title to open
 
 // ----------------------------------------------------------------------------
 addEventListener('resize', () => {
