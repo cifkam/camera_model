@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>View Camera Focus</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1c1e22; font-family: system-ui, sans-serif; }
+  canvas { display: block; }
+  #info {
+    position: absolute; left: 12px; bottom: 12px; max-width: min(720px, calc(100vw - 360px));
+    color: #e6e6e6; background: rgba(0,0,0,.55); backdrop-filter: blur(4px);
+    padding: 10px 14px; border-radius: 8px; font-size: 13px; line-height: 1.55;
+    pointer-events: none; white-space: pre-wrap; font-variant-numeric: tabular-nums;
+  }
+  #info b { color: #fff; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .warn { color: #ffb347; }
+  #help { position: absolute; left: 12px; top: 12px; color: #aaa; font-size: 12px; pointer-events: none; }
+  /* checkbox rows: checkbox first, label after, so long labels never push the box around */
+  body .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
+  body .lil-gui .controller.boolean .name { width: auto; min-width: 0; flex: 1 1 auto; }
+  body .lil-gui .controller.boolean .widget { width: auto; flex: 0 0 auto; margin-right: 10px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="help">drag: orbit · right-drag: pan · wheel: zoom</div>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+// ----------------------------------------------------------------------------
+// Parameters (camera dimensions in mm, scene in metres)
+// ----------------------------------------------------------------------------
+const MM = 0.001;
+const FORMATS = { '4x5': [120, 95], '5x7': [170, 120], '8x10': [245, 195] }; // image area w × h, mm
+
+const P = {
+  focal: 150,          // lens focal length, mm
+  extension: 156,      // rail distance between standard centres, mm  ("focusing")
+  format: '4x5',
+  frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0,   // deg, deg, mm, mm
+  rearTilt: 0,  rearSwing: 0,  rearRise: 0,  rearShift: 0,
+  tiltPivot: 'axis',   // 'axis' (about standard centre) or 'base' (about bottom edge)
+  cameraHeight: 1.2,   // optical axis height above ground, m
+  extent: 8,           // scene half-extent, m
+  fnumber: 11,
+  cocMode: 'from print',   // circle of confusion from print size + viewing, or 'manual'
+  printLong: 40,           // print long edge, cm
+  viewDist: 50,            // viewing distance, cm
+  eyeRes: 1500,            // tolerable blur subtends 1/eyeRes rad at the eye (~2.3 arcmin)
+  coc: 0.1,                // manual circle of confusion on film, mm
+  showDof: true, showDofPlanes: false,
+  showFov: true, showSharpArea: true, showFullPlane: false,
+  showPlanes: false, showLines: false, showBellows: true, showGround: true,
+};
+
+const COL = {
+  posf: 0x4fe07a, posfVirtual: 0xff8a3d, film: 0xffffff, lens: 0x4fa8ff,
+  scheimpflug: 0xff4fd8, hinge: 0xffd84f, axis: 0x9ad8ff, fov: 0xc9a0ff, dof: 0x3ee6ff,
+};
+
+// Circle of confusion on film (mm): tolerable blur on the print, divided by the enlargement.
+function circleOfConfusion(filmLongEdgeMM) {
+  if (P.cocMode === 'manual') return { coc: P.coc, enlargement: NaN, printBlur: NaN };
+  const printBlur = P.viewDist * 10 / P.eyeRes;              // mm on the print
+  const enlargement = P.printLong * 10 / filmLongEdgeMM;
+  return { coc: printBlur / enlargement, enlargement, printBlur };
+}
+
+// ----------------------------------------------------------------------------
+// Optics: plane of sharp focus from film plane + thin lens
+// ----------------------------------------------------------------------------
+// Plane representation: { n: Vector3, d: number } with n·p + d = 0
+const planeFrom = (p, n) => ({ n: n.clone(), d: -n.dot(p) });
+const sdf = (pl, p) => pl.n.dot(p) + pl.d;
+function normalizePlane(pl) {
+  const L = pl.n.length();
+  if (L < 1e-12) return null;              // plane at infinity
+  return { n: pl.n.clone().divideScalar(L), d: pl.d / L };
+}
+
+// Lens coordinate frame: origin at the lens centre, z along the lens axis towards the subject
+function lensBasis(C, q) {
+  return {
+    C,
+    u: new THREE.Vector3(1, 0, 0).applyQuaternion(q),
+    v: new THREE.Vector3(0, 1, 0).applyQuaternion(q),
+    n: new THREE.Vector3(0, 0, 1).applyQuaternion(q),
+  };
+}
+function toLensPlane(B, pl) {
+  return normalizePlane({ n: new THREE.Vector3(pl.n.dot(B.u), pl.n.dot(B.v), pl.n.dot(B.n)), d: pl.d + pl.n.dot(B.C) });
+}
+
+/**
+ * A thin lens maps object space to image space projectively. In lens
+ * coordinates a point (x,y,z) on the film side maps to (f x, f y, f z) / (z + f).
+ * Planes transform with the inverse-transpose: (a,b,c,d) -> (a f, b f, c f - d, d f).
+ * The image of the film plane under this map is the plane of sharp focus; the
+ * images of the film plane scaled by 1/(1 ± k) about the lens centre are the
+ * depth-of-field limit planes (see focusInterval). Returns a world plane.
+ */
+function imageOfLensPlane(B, pl, f) {
+  const { x: a, y: b, z: c } = pl.n, d = pl.d;
+  const a2 = a * f, b2 = b * f, c2 = c * f - d, d2 = d * f;
+  const nw = B.u.clone().multiplyScalar(a2).add(B.v.clone().multiplyScalar(b2)).add(B.n.clone().multiplyScalar(c2));
+  return normalizePlane({ n: nw, d: d2 - nw.dot(B.C) });
+}
+
+/**
+ * In-focus interval along a chief ray from the lens centre (unit direction
+ * dirWorld). For an object at distance t the converging cone behind the lens is
+ * cut by the film plane at parameter s0 = alpha + beta/t (s0 = 1 exactly at the
+ * image point), so the blur diameter is (f/N)·|1 - s0|. It stays below the
+ * circle of confusion c when |1 - s0| <= k = c·N/f, an interval in 1/t.
+ * Returns { tNear, tFar } in metres (tFar may be Infinity) or null.
+ */
+function focusInterval(B, filmL, f, k, dirWorld) {
+  const r = new THREE.Vector3(dirWorld.dot(B.u), dirWorld.dot(B.v), dirWorld.dot(B.n));
+  const nr = filmL.n.dot(r);
+  if (Math.abs(nr) < 1e-9 || r.z <= 0) return null;
+  const alpha = filmL.d * r.z / (f * nr), beta = -filmL.d / nr;
+  let w0 = (1 - k - alpha) / beta, w1 = (1 + k - alpha) / beta;
+  if (w0 > w1) [w0, w1] = [w1, w0];
+  w0 = Math.max(w0, 0);
+  if (w1 <= 0 || w0 > w1) return null;
+  return { tNear: 1 / w1, tFar: w0 > 0 ? 1 / w0 : Infinity };
+}
+
+function intersectPlanes(p1, p2) {
+  const dir = p1.n.clone().cross(p2.n);
+  const L2 = dir.lengthSq();
+  if (L2 < 1e-10) return null;             // parallel planes
+  const h1 = -p1.d, h2 = -p2.d;
+  const pt = p2.n.clone().cross(dir).multiplyScalar(h1)
+    .add(dir.clone().cross(p1.n).multiplyScalar(h2)).multiplyScalar(1 / L2);
+  return { p: pt, dir: dir.normalize() };
+}
+
+function clipLineToBox(line, min, max) {
+  let t0 = -Infinity, t1 = Infinity;
+  for (const k of ['x', 'y', 'z']) {
+    const p = line.p[k], d = line.dir[k];
+    if (Math.abs(d) < 1e-12) { if (p < min[k] || p > max[k]) return null; continue; }
+    let a = (min[k] - p) / d, b = (max[k] - p) / d;
+    if (a > b) [a, b] = [b, a];
+    t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+  }
+  if (t0 > t1) return null;
+  return [line.p.clone().addScaledVector(line.dir, t0), line.p.clone().addScaledVector(line.dir, t1)];
+}
+
+function clipPlaneToBox(pl, min, max) {
+  const c = [];
+  for (let i = 0; i < 8; i++)
+    c.push(new THREE.Vector3(i & 1 ? max.x : min.x, i & 2 ? max.y : min.y, i & 4 ? max.z : min.z));
+  const E = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]];
+  const pts = [];
+  for (const [i, j] of E) {
+    const s0 = sdf(pl, c[i]), s1 = sdf(pl, c[j]);
+    if ((s0 < 0) !== (s1 < 0)) pts.push(c[i].clone().lerp(c[j], s0 / (s0 - s1)));
+  }
+  if (pts.length < 3) return [];
+  const ctr = pts.reduce((acc, p) => acc.add(p), new THREE.Vector3()).divideScalar(pts.length);
+  const n = pl.n.clone().normalize();
+  const e1 = (Math.abs(n.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).cross(n).normalize();
+  const e2 = n.clone().cross(e1);
+  const ang = p => { const r = p.clone().sub(ctr); return Math.atan2(r.dot(e2), r.dot(e1)); };
+  return pts.sort((a, b) => ang(a) - ang(b));
+}
+
+// Sutherland–Hodgman clip of a convex polygon, keeping the side where sdf(pl) >= 0
+function clipPolygonToHalfSpace(pts, pl) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length], sa = sdf(pl, a), sb = sdf(pl, b);
+    if (sa >= 0) out.push(a);
+    if ((sa >= 0) !== (sb >= 0)) out.push(a.clone().lerp(b, sa / (sa - sb)));
+  }
+  return out;
+}
+
+// Pose of a standard: nominal centre on the rail + movements
+function standardPose(nominal, tiltDeg, swingDeg, rise, shift, halfH) {
+  const qTilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(tiltDeg));
+  const qSwing = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(swingDeg));
+  const q = qSwing.clone().multiply(qTilt);          // tilt in the standard's frame, then swing about vertical
+  let c = nominal.clone().add(new THREE.Vector3(shift, rise, 0));
+  if (P.tiltPivot === 'base') {
+    const pivot = c.clone().add(new THREE.Vector3(0, -halfH, 0));
+    c = pivot.add(new THREE.Vector3(0, halfH, 0).applyQuaternion(q));
+  }
+  return { position: c, quaternion: q };
+}
+
+// ----------------------------------------------------------------------------
+// Scene setup
+// ----------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1c1e22);
+scene.fog = new THREE.Fog(0x1c1e22, 12, 40);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
+camera.position.set(-2.8, 2.2, -2.0);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.2, 1.0, 1.4);
+controls.enableDamping = true;
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(3, 6, -2);
+scene.add(sun);
+
+const dyn = new THREE.Group();   // everything rebuilt on every parameter change
+scene.add(dyn);
+
+const mats = {};
+function mat(color, opts = {}) {
+  const key = color + JSON.stringify(opts);
+  if (!mats[key]) {
+    const { opacity = 1, basic = false, side = THREE.DoubleSide } = opts;
+    const M = basic ? THREE.MeshBasicMaterial : THREE.MeshStandardMaterial;
+    mats[key] = new M({ color, transparent: opacity < 1, opacity, side, depthWrite: opacity >= 1,
+      ...(basic ? {} : { roughness: 0.6, metalness: 0.1 }) });
+  }
+  return mats[key];
+}
+
+function clearGroup(g) {
+  while (g.children.length) {
+    const o = g.children.pop();
+    o.traverse(x => { if (x.geometry) x.geometry.dispose(); });
+  }
+}
+
+const box = (w, h, d, m) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+function tube(p0, p1, r, m) {
+  const dir = p1.clone().sub(p0), len = dir.length();
+  if (len < 1e-9) return new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 10, 1), m);
+  mesh.position.copy(p0).add(p1).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return mesh;
+}
+function polygon(pts, m) {
+  if (pts.length < 3) return new THREE.Group();
+  const pos = [];
+  for (let i = 1; i < pts.length - 1; i++) pos.push(...pts[0].toArray(), ...pts[i].toArray(), ...pts[i + 1].toArray());
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return new THREE.Mesh(g, m);
+}
+function outline(pts, color) {
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  return new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+}
+
+function buildStandard(pose, iw, ih, bar, depth, kind) {
+  const g = new THREE.Group();
+  g.position.copy(pose.position);
+  g.quaternion.copy(pose.quaternion);
+  const fw = iw + 2 * bar + 0.02, fh = ih + 2 * bar + 0.02;
+  const frameM = mat(kind === 'rear' ? 0x5a4634 : 0x4a3a2c);
+  for (const [w, h, x, y] of [[fw, bar, 0, fh / 2 - bar / 2], [fw, bar, 0, -fh / 2 + bar / 2],
+                              [bar, fh, fw / 2 - bar / 2, 0], [bar, fh, -fw / 2 + bar / 2, 0]]) {
+    const b = box(w, h, depth, frameM); b.position.set(x, y, 0); g.add(b);
+  }
+  if (kind === 'rear') {
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(iw, ih), mat(0xcfe3ff, { opacity: 0.35 }));
+    g.add(glass);
+    const corners = [[-iw/2,-ih/2],[iw/2,-ih/2],[iw/2,ih/2],[-iw/2,ih/2]].map(([x, y]) => new THREE.Vector3(x, y, 0));
+    g.add(outline(corners, 0xffffff));
+  } else {
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(fw - 2 * bar, fh - 2 * bar), mat(0x202020, { opacity: 0.95 }));
+    g.add(board);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.055, 32), mat(0x9aa0a8, { opacity: 1 }));
+    barrel.rotation.x = Math.PI / 2; g.add(barrel);
+    for (const z of [0.0285, -0.0285]) {
+      const el = new THREE.Mesh(new THREE.CircleGeometry(0.026, 32), mat(0x5aa9ff, { opacity: 0.55 }));
+      el.position.z = z; g.add(el);
+    }
+  }
+  return g;
+}
+
+// ----------------------------------------------------------------------------
+// Rebuild everything from P
+// ----------------------------------------------------------------------------
+const infoEl = document.getElementById('info');
+const cocCtrls = { print: [], manual: [] };   // filled in by the GUI section
+const fmt = (x, n = 2) => Number.isFinite(x) ? x.toFixed(n) : '–';
+const sw = c => `<span class="sw" style="background:#${c.toString(16).padStart(6, '0')}"></span>`;
+
+function update() {
+  clearGroup(dyn);
+  const E = P.extent, h = P.cameraHeight, f = P.focal * MM, ext = P.extension * MM;
+  const [iw, ih] = FORMATS[P.format].map(v => v * MM);
+  const bar = 0.03, depth = 0.014;
+  const fw = iw + 2 * bar + 0.02, fh = ih + 2 * bar + 0.02;
+  const railY = h - fh / 2 - 0.06;
+
+  // --- standards --------------------------------------------------------------
+  const rearNom = new THREE.Vector3(0, h, 0), frontNom = new THREE.Vector3(0, h, ext);
+  const rear = standardPose(rearNom, P.rearTilt, P.rearSwing, P.rearRise * MM, P.rearShift * MM, fh / 2);
+  const front = standardPose(frontNom, P.frontTilt, P.frontSwing, P.frontRise * MM, P.frontShift * MM, fh / 2);
+  dyn.add(buildStandard(rear, iw, ih, bar, depth, 'rear'));
+  dyn.add(buildStandard(front, iw, ih, bar, depth, 'front'));
+
+  // --- rail, posts, tripod ----------------------------------------------------
+  const railM = mat(0x2b2d33), postM = mat(0x44474f);
+  const rail = box(0.04, 0.03, ext + 0.24, railM); rail.position.set(0, railY, ext / 2); dyn.add(rail);
+  for (const [nom, pose] of [[rearNom, rear], [frontNom, front]]) {
+    const top = new THREE.Vector3(pose.position.x, pose.position.y - fh / 2, nom.z);
+    const bottom = new THREE.Vector3(pose.position.x, railY + 0.015, nom.z);
+    dyn.add(tube(bottom, top, 0.012, postM));
+    const foot = box(0.07, 0.02, 0.05, postM); foot.position.set(pose.position.x, railY + 0.025, nom.z); dyn.add(foot);
+  }
+  const colTop = new THREE.Vector3(0, railY - 0.02, ext / 2);
+  dyn.add(tube(new THREE.Vector3(0, railY - 0.25, ext / 2), colTop, 0.015, postM));
+  for (let k = 0; k < 3; k++) {
+    const a = k * 2 * Math.PI / 3 + Math.PI / 6;
+    dyn.add(tube(colTop.clone().add(new THREE.Vector3(0, -0.2, 0)),
+      new THREE.Vector3(0.55 * Math.cos(a), 0, ext / 2 + 0.55 * Math.sin(a)), 0.009, postM));
+  }
+
+  // --- bellows ----------------------------------------------------------------
+  if (P.showBellows) {
+    const inW = fw - 2 * bar, inH = fh - 2 * bar;
+    const corner = (pose, sx, sy) => new THREE.Vector3(sx * inW / 2, sy * inH / 2, 0).applyQuaternion(pose.quaternion).add(pose.position);
+    const S = [[-1,-1],[1,-1],[1,1],[-1,1]];
+    const r = S.map(([x, y]) => corner(rear, x, y)), fr = S.map(([x, y]) => corner(front, x, y));
+    const pos = [];
+    for (let i = 0; i < 4; i++) {
+      const j = (i + 1) % 4;
+      pos.push(...r[i].toArray(), ...fr[i].toArray(), ...fr[j].toArray(), ...r[i].toArray(), ...fr[j].toArray(), ...r[j].toArray());
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    dyn.add(new THREE.Mesh(g, mat(0x7a1f1f, { opacity: 0.55 })));
+  }
+
+  // --- ground -----------------------------------------------------------------
+  if (P.showGround) {
+    const grid = new THREE.GridHelper(4 * E, Math.round(8 * E), 0x555a66, 0x343842);
+    grid.position.set(0, 0, E); dyn.add(grid);
+    // opaque and depth-writing, so anything below ground is hidden; offset back to avoid z-fighting with the grid
+    mats.ground ??= new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.9,
+      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(4 * E, 4 * E), mats.ground);
+    ground.rotation.x = -Math.PI / 2; ground.position.set(0, -0.001, E); dyn.add(ground);
+  }
+
+  // --- optics -----------------------------------------------------------------
+  const nl = new THREE.Vector3(0, 0, 1).applyQuaternion(front.quaternion);
+  const nr = new THREE.Vector3(0, 0, 1).applyQuaternion(rear.quaternion);
+  const Cl = front.position, Cr = rear.position;
+  const filmPlane = planeFrom(Cr, nr), lensPlane = planeFrom(Cl, nl);
+  const focalPlane = planeFrom(Cl.clone().addScaledVector(nl, f), nl);
+  const B = lensBasis(Cl, front.quaternion);
+  const filmL = toLensPlane(B, filmPlane);
+  const posf = imageOfLensPlane(B, filmL, f);
+
+  // depth of field: blur <= circle of confusion  <=>  |1 - s0| <= k   (see focusInterval)
+  const { coc, enlargement, printBlur } = circleOfConfusion(FORMATS[P.format][0]);
+  const k = coc * MM * P.fnumber / f;
+  const nearPlane = k < 1 ? imageOfLensPlane(B, { n: filmL.n, d: filmL.d / (1 - k) }, f) : null;
+  const farPlane = imageOfLensPlane(B, { n: filmL.n, d: filmL.d / (1 + k) }, f);
+  for (const c of cocCtrls.print) c.enable(P.cocMode === 'from print');
+  for (const c of cocCtrls.manual) c.enable(P.cocMode === 'manual');
+
+  // on-axis image distance (lens centre -> film along the lens axis)
+  const s = nr.dot(Cl.clone().sub(Cr)) / nr.dot(nl);
+  const dObj = s > f ? f * s / (s - f) : (s === f ? Infinity : f * s / (s - f));
+  const virtual = s <= f;
+
+  const bigBox = { min: new THREE.Vector3(-E, -E, -1), max: new THREE.Vector3(E, E, 2 * E) };
+  const posfBox = { min: new THREE.Vector3(-E, 0, -0.6), max: new THREE.Vector3(E, E, 2 * E) };
+  const camBox = { min: new THREE.Vector3(-0.45, -E, -0.6), max: new THREE.Vector3(0.45, E, ext + 0.6) };
+
+  const posfColor = virtual ? COL.posfVirtual : COL.posf;
+  // only the real part of each object-space plane (in front of the lens) is drawn
+  const realPart = pl => clipPolygonToHalfSpace(clipPlaneToBox(pl, posfBox.min, posfBox.max), lensPlane);
+  if (posf && P.showFullPlane) {
+    const poly = realPart(posf);
+    dyn.add(polygon(poly, mat(posfColor, { opacity: P.showSharpArea ? 0.15 : 0.35, basic: true })));
+    dyn.add(outline(poly, posfColor));
+  }
+  if (P.showDofPlanes) {
+    for (const pl of [nearPlane, farPlane]) {
+      if (!pl) continue;
+      const poly = realPart(pl);
+      dyn.add(polygon(poly, mat(COL.dof, { opacity: 0.07, basic: true })));
+      dyn.add(outline(poly, COL.dof));
+    }
+  }
+
+  // --- field of view: film gate corners through the lens centre ----------------
+  // The conjugate of the film rectangle is the quadrilateral on the plane of
+  // sharp focus hit by the rays (film corner -> lens centre). That is the part of
+  // the scene that is both inside the frame and in focus.
+  const gate = [[-1,-1],[1,-1],[1,1],[-1,1]].map(([x, y]) =>
+    new THREE.Vector3(x * iw / 2, y * ih / 2, 0).applyQuaternion(rear.quaternion).add(Cr));
+  let sharpQuad = null;
+  if (posf) {
+    const hits = gate.map(g => {
+      const dir = Cl.clone().sub(g);
+      const den = posf.n.dot(dir);
+      if (Math.abs(den) < 1e-12) return null;
+      const t = -sdf(posf, Cl) / den;
+      return t > 0 ? Cl.clone().addScaledVector(dir, t) : null;
+    });
+    if (hits.every(Boolean)) sharpQuad = hits;
+  }
+  if (P.showFov) {
+    const rayM = mat(COL.fov, { opacity: 0.85, basic: true }), farM = mat(COL.fov, { opacity: 0.25, basic: true });
+    const far = gate.map(g => Cl.clone().addScaledVector(Cl.clone().sub(g).normalize(), 3 * E));
+    for (let i = 0; i < 4; i++) {
+      dyn.add(tube(gate[i], Cl, 0.0015, rayM));                       // inside the camera
+      dyn.add(tube(Cl, sharpQuad ? sharpQuad[i] : far[i], 0.003, rayM));
+      if (sharpQuad) dyn.add(tube(sharpQuad[i], far[i], 0.002, farM)); // beyond the sharp plane
+    }
+    const pos = [];
+    for (let i = 0; i < 4; i++) pos.push(...Cl.toArray(), ...far[i].toArray(), ...far[(i + 1) % 4].toArray());
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    dyn.add(new THREE.Mesh(g, mat(COL.fov, { opacity: 0.06, basic: true })));
+  }
+  if (P.showSharpArea && sharpQuad) {
+    dyn.add(polygon(sharpQuad, mat(posfColor, { opacity: 0.6, basic: true })));
+    dyn.add(outline(sharpQuad, 0xffffff));
+  }
+
+  // --- depth of field volume inside the frame ---------------------------------
+  // Along each corner ray the in-focus stretch is [tNear, tFar]; the volume that
+  // is both framed and acceptably sharp is the slab between the near and far quads.
+  const rayDirs = gate.map(g => Cl.clone().sub(g).normalize());
+  const ivs = rayDirs.map(d => focusInterval(B, filmL, f, k, d));
+  const axisIv = focusInterval(B, filmL, f, k, nl);
+  let dofSlab = null;
+  if (ivs.every(Boolean)) {
+    dofSlab = {
+      near: ivs.map((iv, i) => Cl.clone().addScaledVector(rayDirs[i], iv.tNear)),
+      far: ivs.map((iv, i) => Cl.clone().addScaledVector(rayDirs[i], Math.min(iv.tFar, 3 * E))),
+      farInfinite: ivs.some(iv => !Number.isFinite(iv.tFar)),
+    };
+  }
+  if (P.showDof && dofSlab) {
+    const { near, far } = dofSlab;
+    const quads = [near, far];
+    for (let i = 0; i < 4; i++) { const j = (i + 1) % 4; quads.push([near[i], near[j], far[j], far[i]]); }
+    const pos = [];
+    for (const q of quads)
+      pos.push(...q[0].toArray(), ...q[1].toArray(), ...q[2].toArray(), ...q[0].toArray(), ...q[2].toArray(), ...q[3].toArray());
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    dyn.add(new THREE.Mesh(g, mat(COL.dof, { opacity: 0.16, basic: true })));
+    dyn.add(outline(near, COL.dof));
+    dyn.add(outline(far, COL.dof));
+    const edgeM = mat(COL.dof, { opacity: 0.9, basic: true });
+    for (let i = 0; i < 4; i++) dyn.add(tube(near[i], far[i], 0.0025, edgeM));
+  }
+  if (P.showPlanes) {
+    for (const [pl, c] of [[filmPlane, COL.film], [lensPlane, COL.lens]]) {
+      const poly = clipPlaneToBox(pl, camBox.min, camBox.max);
+      dyn.add(polygon(poly, mat(c, { opacity: 0.12, basic: true })));
+      dyn.add(outline(poly, c));
+    }
+  }
+
+  // lens axis and on-axis focus point
+  const tFocus = posf ? -sdf(posf, Cl) / posf.n.dot(nl) : Infinity;
+  const axisEnd = Cl.clone().addScaledVector(nl, Number.isFinite(tFocus) && tFocus > 0 ? Math.min(tFocus, 3 * E) : 2 * E);
+  dyn.add(tube(Cl.clone().addScaledVector(nl, -s), axisEnd, 0.004, mat(COL.axis, { opacity: 0.8, basic: true })));
+  if (Number.isFinite(tFocus) && tFocus > 0) {
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), mat(COL.axis, { basic: true }));
+    dot.position.copy(axisEnd); dyn.add(dot);
+  }
+
+  // Scheimpflug line (film ∩ lens plane) and hinge line (PoSF ∩ front focal plane)
+  let schLine = null, hingeLine = null;
+  if (P.showLines) {
+    schLine = intersectPlanes(filmPlane, lensPlane);
+    const seg = schLine && clipLineToBox(schLine, bigBox.min, bigBox.max);
+    if (seg) dyn.add(tube(seg[0], seg[1], 0.008, mat(COL.scheimpflug, { basic: true })));
+    hingeLine = posf && intersectPlanes(posf, focalPlane);
+    const seg2 = hingeLine && clipLineToBox(hingeLine, bigBox.min, bigBox.max);
+    if (seg2) dyn.add(tube(seg2[0], seg2[1], 0.008, mat(COL.hinge, { basic: true })));
+  }
+
+  // --- readout ----------------------------------------------------------------
+  const lensFilmAngle = THREE.MathUtils.radToDeg(Math.acos(Math.min(1, Math.abs(nl.dot(nr)))));
+  const posfAngle = posf ? THREE.MathUtils.radToDeg(Math.acos(Math.min(1, Math.abs(posf.n.dot(nr))))) : NaN;
+  const hinge = hingeLine || (posf && intersectPlanes(posf, focalPlane));
+  const J = hinge ? Cl.clone().sub(hinge.p).cross(hinge.dir).length() : Infinity;
+  const mag = Number.isFinite(dObj) && dObj > 0 ? s / dObj : 0;
+
+  let txt = `<b>Lens</b> f = ${P.focal} mm · on-axis film distance ${fmt(s / MM, 1)} mm · lens/film angle ${fmt(lensFilmAngle, 1)}°\n`;
+  if (!posf) txt += `${sw(COL.posf)}Plane of sharp focus: <b>at infinity</b>\n`;
+  else if (virtual) txt += `<span class="warn">${sw(COL.posfVirtual)}Image distance ≤ f: focused "beyond infinity" (only the real part in front of the lens is drawn)</span>\n`;
+  else txt += `${sw(COL.posf)}<b>Plane of sharp focus</b>: on-axis distance ${fmt(dObj)} m (m = 1:${fmt(1 / mag, 0)}), ` +
+              `${fmt(posfAngle, 1)}° from film plane\n`;
+  if (sharpQuad) {
+    const L = (i, j) => sharpQuad[i].distanceTo(sharpQuad[j]);
+    const w = [L(0, 1), L(3, 2)], hh = [L(0, 3), L(1, 2)];
+    const rng = v => Math.abs(v[0] - v[1]) < 0.005 * Math.max(v[0], v[1]) ? fmt(v[0]) : `${fmt(Math.min(...v))}–${fmt(Math.max(...v))}`;
+    txt += `${sw(COL.fov)}<b>Sharp area in frame</b> (${P.format}, on the plane): ${rng(w)} m wide × ${rng(hh)} m high\n`;
+  } else if (posf) {
+    txt += `${sw(COL.fov)}Frame does not meet the plane of sharp focus in front of the lens\n`;
+  }
+  const H = f * f / (P.fnumber * coc * MM) + f;    // hyperfocal distance of the untilted lens
+  txt += `${sw(COL.dof)}<b>Depth of field</b> f/${P.fnumber}, CoC ${fmt(coc, 3)} mm` +
+    (P.cocMode === 'manual' ? '' :
+      ` (${fmt(printBlur, 2)} mm on a ${P.printLong} cm print viewed from ${P.viewDist} cm, ${fmt(enlargement, 1)}× enlargement)`) + `\n`;
+  txt += axisIv
+    ? `   on the lens axis ${fmt(axisIv.tNear)} m – ${Number.isFinite(axisIv.tFar) ? fmt(axisIv.tFar) + ' m' : '∞'}   (hyperfocal H = ${fmt(H, 1)} m)\n`
+    : `   nothing acceptably sharp along the lens axis\n`;
+  if (dofSlab && dofSlab.farInfinite) txt += `   far limit at ∞ for part of the frame; volume cut at the scene extent\n`;
+  else if (!dofSlab) txt += `   in-focus volume not drawn: a corner ray has no in-focus stretch\n`;
+  txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane\n`;
+  txt += `${sw(COL.scheimpflug)}Scheimpflug line (film ∩ lens): ${schLine || lensFilmAngle > 1e-6 ? 'present' : 'at infinity (planes parallel)'}\n`;
+  txt += `${sw(COL.hinge)}Hinge line: distance from lens J = ${Number.isFinite(J) ? fmt(J) + ' m' : '∞'}` +
+         (lensFilmAngle > 1e-6 ? `  (f / sin α = ${fmt(f / Math.sin(THREE.MathUtils.degToRad(lensFilmAngle)))} m)` : '');
+  infoEl.innerHTML = txt;
+}
+
+// ----------------------------------------------------------------------------
+// GUI
+// ----------------------------------------------------------------------------
+const gui = new GUI({ title: 'View camera', width: 310 });
+const fL = gui.addFolder('Lens & focus');
+fL.add(P, 'focal', 47, 480, 1).name('focal length (mm)');
+fL.add(P, 'extension', 40, 600, 0.5).name('standard separation (mm)');
+fL.add(P, 'format', Object.keys(FORMATS)).name('format');
+
+const fF = gui.addFolder('Front standard (lens)');
+fF.add(P, 'frontTilt', -45, 45, 0.25).name('tilt ° (+ top forward)');
+fF.add(P, 'frontSwing', -45, 45, 0.25).name('swing ° (+ to left)');
+fF.add(P, 'frontRise', -80, 80, 1).name('rise / fall (mm)');
+fF.add(P, 'frontShift', -80, 80, 1).name('shift (mm)');
+
+const fR = gui.addFolder('Rear standard (film)');
+fR.add(P, 'rearTilt', -45, 45, 0.25).name('tilt ° (+ top forward)');
+fR.add(P, 'rearSwing', -45, 45, 0.25).name('swing ° (+ to left)');
+fR.add(P, 'rearRise', -80, 80, 1).name('rise / fall (mm)');
+fR.add(P, 'rearShift', -80, 80, 1).name('shift (mm)');
+gui.add(P, 'tiltPivot', ['axis', 'base']).name('tilt pivot');
+
+const fD = gui.addFolder('Depth of field');
+fD.add(P, 'fnumber', [2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90]).name('f-number');
+fD.add(P, 'cocMode', ['from print', 'manual']).name('circle of confusion');
+cocCtrls.print.push(
+  fD.add(P, 'printLong', 10, 200, 1).name('print long edge (cm)'),
+  fD.add(P, 'viewDist', 20, 300, 5).name('viewing distance (cm)'),
+  fD.add(P, 'eyeRes', 1000, 3000, 50).name('eye resolves 1/x rad'));
+cocCtrls.manual.push(fD.add(P, 'coc', 0.02, 0.5, 0.005).name('CoC on film (mm)'));
+
+const fV = gui.addFolder('Display');
+fV.add(P, 'showSharpArea').name('sharp area in frame');
+fV.add(P, 'showFullPlane').name('extended plane of sharp focus');
+fV.add(P, 'showDof').name('in-focus volume in frame');
+fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
+fV.add(P, 'showFov').name('field of view rays');
+fV.add(P, 'showPlanes').name('extended film & lens planes');
+fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
+fV.add(P, 'showBellows').name('bellows');
+fV.add(P, 'showGround').name('ground');
+
+const fS = gui.addFolder('Scene');
+fS.add(P, 'cameraHeight', 0.1, 2.5, 0.05).name('lens height (m)');
+fS.add(P, 'extent', 1, 12, 0.5).name('scene extent (m)');
+fS.close();
+
+const ZERO = { frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0, rearTilt: 0, rearSwing: 0, rearRise: 0, rearShift: 0 };
+const presets = {
+  'Reset movements': () => Object.assign(P, ZERO),
+  'Front tilt 6° (near–far)': () => Object.assign(P, ZERO, { frontTilt: 6 }),
+  'Front swing 12°': () => Object.assign(P, ZERO, { frontSwing: 12 }),
+  'Rear tilt 6° (shape changes)': () => Object.assign(P, ZERO, { rearTilt: -6 }),
+};
+const fP = gui.addFolder('Presets');
+for (const name of Object.keys(presets))
+  fP.add({ fn: () => { presets[name](); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'fn').name(name);
+
+gui.onChange(update);
+
+// ----------------------------------------------------------------------------
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+update();
+renderer.render(scene, camera);
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>
