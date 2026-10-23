@@ -699,15 +699,8 @@ fS.add(P, 'extent', 1, 12, 0.5).name('scene extent (m)');
 fS.close();
 
 const ZERO = { frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0, rearTilt: 0, rearSwing: 0, rearRise: 0, rearShift: 0 };
-const presets = {
-  'Reset movements': () => Object.assign(P, ZERO),
-  'Front tilt 6° (near–far)': () => Object.assign(P, ZERO, { frontTilt: 6 }),
-  'Front swing 12°': () => Object.assign(P, ZERO, { frontSwing: 12 }),
-  'Rear tilt 6° (shape changes)': () => Object.assign(P, ZERO, { rearTilt: -6 }),
-};
-const fP = gui.addFolder('Presets');
-for (const name of Object.keys(presets))
-  fP.add({ fn: () => { presets[name](); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'fn').name(name);
+gui.add({ reset: () => { Object.assign(P, ZERO); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'reset')
+  .name('Reset movements');
 
 gui.onChange(update);
 if (matchMedia('(max-width: 700px)').matches) gui.close();   // phones: start with the 3D view, tap the title to open
