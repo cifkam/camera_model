@@ -75,6 +75,9 @@ uv run python check_optics.py
 - Tilt rotates about the standard's horizontal axis, positive = top of the standard forward
   (for the front standard that is "tilt down"). Swing rotates about the vertical axis.
 - Tilt pivot `axis` rotates about the standard's centre, `base` about its bottom edge.
+- Slider ranges for focal length, image circle and separation scale with the format diagonal
+  (0.3–2.5×, 0.8–3× and 0.25–3× respectively), rise/fall and shift with ±0.6× the frame width;
+  the rail is as long as the maximum separation.
 - Standard separation is the rail distance between the two standards' nominal centres; the
   focus distance slider is linked to it (on-axis distance from the lens centre, via the thin-lens
   equation; its range follows the separation limits, capped at 30 m). The lens

@@ -81,19 +81,33 @@ class LogNumberController extends NumberController {
 // Parameters (camera dimensions in mm, scene in metres)
 // ----------------------------------------------------------------------------
 const MM = 0.001;
-const MAX_SEPARATION = 600;   // mm, slider limit and rail length
+// Slider ranges that scale with the format: lens-related ones with the diagonal, rise/shift with the frame width (mm)
+function formatRanges(format = P.format) {
+  const [w, h] = FORMATS[format], diag = Math.hypot(w, h);
+  return {
+    focal: [Math.round(0.3 * diag), Math.round(2.5 * diag)],
+    imageCircle: [Math.round(0.8 * diag), Math.round(3 * diag)],
+    extension: [Math.round(0.25 * diag), Math.round(3 * diag)],   // the rail is as long as the maximum
+    shift: Math.round(0.6 * w),
+  };
+}
 const DEFAULT_FOCUS = 3000;   // mm from the lens: initial focus, and the focus set when the format changes
 // standard separation (mm) that focuses a thin lens of focal length f (mm) at distance d (mm)
-const separationFor = (f, d) => Math.round(100 * f * d / (d - f)) / 100;
-const FORMATS = { '4x5': [120, 95], '5x7': [170, 120], '8x10': [245, 195] }; // image area w × h, mm
+const separationFor = (f, d) => f * d / (d - f);   // kept exact: short lenses are very sensitive to it
+// image area w × h in mm, largest first (roll-film sizes are nominal cm, sheet-film sizes are inches)
+const FORMATS = {
+  '8x10"': [245, 195], '5x7"': [170, 120], '4x5"': [120, 95],
+  '6x9 roll': [84, 56], '6x7 roll': [69.5, 56], '6x6 roll': [56, 56], '6x4.5 roll': [56, 41.5], '35 mm': [36, 24],
+};
 // typical image circle (mm at infinity) of a lens made for the format: diagonal plus room for movements
-const IMAGE_CIRCLE = { '4x5': 220, '5x7': 300, '8x10': 420 };
+const IMAGE_CIRCLE = { '8x10"': 420, '5x7"': 300, '4x5"': 220,
+                       '6x9 roll': 125, '6x7 roll': 100, '6x6 roll': 90, '6x4.5 roll': 80, '35 mm': 45 };
 
 const P = {
   focal: 150,          // lens focal length, mm
   extension: separationFor(150, DEFAULT_FOCUS),   // rail distance between standard centres, mm ("focusing")
   focusDist: DEFAULT_FOCUS * MM,                  // on-axis focus distance from the lens, m (linked to extension)
-  format: '4x5',
+  format: '4x5"',
   autoLens: true,      // on format change: focal length = format diagonal, image circle = typical for the format
   frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0,   // deg, deg, mm, mm
   rearTilt: 0,  rearSwing: 0,  rearRise: 0,  rearShift: 0,
@@ -427,7 +441,8 @@ function setSeparationForFocus(d) {
   const sReq = f * d / (d - f);
   const s0 = onAxisFilmDistance(0), slope = onAxisFilmDistance(1) - s0;
   if (Math.abs(slope) < 1e-9) return;
-  P.extension = THREE.MathUtils.clamp(Math.round(100 * (sReq - s0) / slope / MM) / 100, 40, MAX_SEPARATION);
+  const [lo, hi] = formatRanges().extension;
+  P.extension = THREE.MathUtils.clamp((sReq - s0) / slope / MM, lo, hi);
 }
 const fmt = (x, n = 2) => Number.isFinite(x) ? x.toFixed(n) : '–';
 const sw = c => `<span class="sw" style="background:#${c.toString(16).padStart(6, '0')}"></span>`;
@@ -451,8 +466,8 @@ function update() {
   // --- rail, posts, tripod ----------------------------------------------------
   const railM = mat(0x2b2d33), postM = mat(0x44474f);
   // fixed monorail: ends at the front standard, long enough for the rear one at maximum separation
-  const RAIL_Z = -0.2, railLen = MAX_SEPARATION * MM + 0.08;
-  const rail = box(0.04, 0.03, railLen, railM); rail.position.set(0, railY, 0.04 - railLen / 2); dyn.add(rail);
+  const railLen = formatRanges().extension[1] * MM + 0.08, RAIL_Z = 0.04 - railLen / 2;   // tripod under the rail's middle
+  const rail = box(0.04, 0.03, railLen, railM); rail.position.set(0, railY, RAIL_Z); dyn.add(rail);
   for (const [nom, pose] of [[rearNom, rear], [frontNom, front]]) {
     const top = new THREE.Vector3(pose.position.x, pose.position.y - fh / 2, nom.z);
     const bottom = new THREE.Vector3(pose.position.x, railY + 0.015, nom.z);
@@ -520,7 +535,8 @@ function update() {
 
   // keep the focus-distance slider in step: its range follows the separation limits
   if (focusCtrl) {
-    const sMin = onAxisFilmDistance(40 * MM), sMax = onAxisFilmDistance(MAX_SEPARATION * MM);
+    const [extLo, extHi] = formatRanges().extension;
+    const sMin = onAxisFilmDistance(extLo * MM), sMax = onAxisFilmDistance(extHi * MM);
     const conj = sv => sv > f ? f * sv / (sv - f) : Infinity;
     const dMin = Math.max(0.01, Math.min(conj(sMax), FOCUS_SLIDER_CAP - 0.01));
     const dMax = Math.min(conj(sMin), FOCUS_SLIDER_CAP);
@@ -713,10 +729,21 @@ const gui = new GUI({ title: 'View camera', width: 310 });
 const fL = gui.addFolder('Lens & focus');
 const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
 fL.add(P, 'autoLens').name('auto lens & focus');
-const extCtrl = fL.add(P, 'extension', 40, MAX_SEPARATION, 0.1).name('standard separation (mm)');
+const R0 = formatRanges();
+const extCtrl = fL.add(P, 'extension', ...R0.extension, 0.1).name('standard separation (mm)').decimals(2);
 focusCtrl = new LogNumberController(fL, P, 'focusDist', 0.2, FOCUS_SLIDER_CAP, 0.01).name('focus distance (m)').decimals(2);
-fL.add(P, 'focal', 47, 480, 1).name('focal length (mm)');
-fL.add(P, 'imageCircle', 100, 600, 5).name('image circle at ∞ (mm)');
+const focalCtrl = fL.add(P, 'focal', ...R0.focal, 1).name('focal length (mm)');
+const icCtrl = fL.add(P, 'imageCircle', ...R0.imageCircle, 1).name('image circle at ∞ (mm)');
+const shiftCtrls = [];   // rise/fall and shift sliders of both standards, filled in below
+// re-range the format-dependent sliders and clamp their values into the new range
+function applyFormatRanges() {
+  const R = formatRanges();
+  const set = (ctrl, key, [lo, hi]) => { ctrl.min(lo).max(hi); P[key] = THREE.MathUtils.clamp(P[key], lo, hi); };
+  set(extCtrl, 'extension', R.extension);
+  set(focalCtrl, 'focal', R.focal);
+  set(icCtrl, 'imageCircle', R.imageCircle);
+  for (const c of shiftCtrls) set(c, c.property, [-R.shift, R.shift]);
+}
 fL.add({ hyperfocal: () => {
   const f = P.focal * MM, coc = circleOfConfusion(FORMATS[P.format][0]).coc * MM;
   setSeparationForFocus(f * f / (P.fnumber * coc) + f);      // H = f² / (N c) + f, from the lens
@@ -725,10 +752,12 @@ fL.add({ hyperfocal: () => {
 } }, 'hyperfocal').name('Focus at hyperfocal distance');
 // lil-gui runs the panel-wide onChange (the rebuild) before a controller's own handler, so rebuild again here
 formatCtrl.onChange(v => {
-  if (!P.autoLens) return;
-  P.focal = Math.round(Math.hypot(...FORMATS[v]));            // "normal" lens = format diagonal
-  P.imageCircle = IMAGE_CIRCLE[v];
-  P.extension = separationFor(P.focal, DEFAULT_FOCUS);        // not snapped to the slider step: focus is very sensitive here
+  if (P.autoLens) {
+    P.focal = Math.round(Math.hypot(...FORMATS[v]));          // "normal" lens = format diagonal
+    P.imageCircle = IMAGE_CIRCLE[v];
+    P.extension = separationFor(P.focal, DEFAULT_FOCUS);      // not snapped to the slider step: focus is very sensitive here
+  }
+  applyFormatRanges();
   gui.controllersRecursive().forEach(c => c.updateDisplay());
   update();
 });
@@ -736,15 +765,18 @@ formatCtrl.onChange(v => {
 const fF = gui.addFolder('Front standard (lens)');
 fF.add(P, 'frontTilt', -30, 30, 0.25).name('tilt ° (+ top forward)');
 fF.add(P, 'frontSwing', -30, 30, 0.25).name('swing ° (+ to left)');
-fF.add(P, 'frontRise', -60, 60, 1).name('rise / fall (mm)');
-fF.add(P, 'frontShift', -60, 60, 1).name('shift (mm)');
+shiftCtrls.push(fF.add(P, 'frontRise', -R0.shift, R0.shift, 1).name('rise / fall (mm)'),
+                fF.add(P, 'frontShift', -R0.shift, R0.shift, 1).name('shift (mm)'));
 
 const fR = gui.addFolder('Rear standard (film)');
 fR.add(P, 'rearTilt', -30, 30, 0.25).name('tilt ° (+ top forward)');
 fR.add(P, 'rearSwing', -30, 30, 0.25).name('swing ° (+ to left)');
-fR.add(P, 'rearRise', -60, 60, 1).name('rise / fall (mm)');
-fR.add(P, 'rearShift', -60, 60, 1).name('shift (mm)');
+shiftCtrls.push(fR.add(P, 'rearRise', -R0.shift, R0.shift, 1).name('rise / fall (mm)'),
+                fR.add(P, 'rearShift', -R0.shift, R0.shift, 1).name('shift (mm)'));
 gui.add(P, 'tiltPivot', ['axis', 'base']).name('tilt pivot');
+const ZERO = { frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0, rearTilt: 0, rearSwing: 0, rearRise: 0, rearShift: 0 };
+gui.add({ reset: () => { Object.assign(P, ZERO); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'reset')
+  .name('Reset movements');
 
 const fD = gui.addFolder('Depth of field');
 fD.add(P, 'fnumber', [2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90]).name('f-number');
@@ -766,15 +798,13 @@ fV.add(P, 'showPlanes').name('extended film & lens planes');
 fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
 fV.add(P, 'showBellows').name('bellows');
 fV.add(P, 'showGround').name('ground');
+fV.close();
 
 const fS = gui.addFolder('Scene');
 fS.add(P, 'cameraHeight', 0.1, 2.5, 0.05).name('lens height (m)');
 fS.add(P, 'extent', 1, 12, 0.5).name('scene extent (m)');
 fS.close();
 
-const ZERO = { frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0, rearTilt: 0, rearSwing: 0, rearRise: 0, rearShift: 0 };
-gui.add({ reset: () => { Object.assign(P, ZERO); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'reset')
-  .name('Reset movements');
 
 // the panel-wide handler sees which controller changed, so the focus slider can drive the separation
 gui.onChange(e => {
