@@ -501,7 +501,9 @@ function update() {
     const top = new THREE.Vector3(pose.position.x, pose.position.y - fh / 2, nom.z);
     const bottom = new THREE.Vector3(pose.position.x, railY + 0.015, nom.z);
     dyn.add(tube(bottom, top, 0.012, postM));
-    const foot = box(0.07, 0.02, 0.05, postM); foot.position.set(pose.position.x, railY + 0.025, nom.z); dyn.add(foot);
+    // crossbar: spans from the rail to the (shifted) post, so it always rests on the rail
+    const sx = pose.position.x;
+    const foot = box(Math.abs(sx) + 0.07, 0.02, 0.05, postM); foot.position.set(sx / 2, railY + 0.025, nom.z); dyn.add(foot);
   }
   const colTop = new THREE.Vector3(0, railY - 0.02, RAIL_Z);
   dyn.add(tube(new THREE.Vector3(0, railY - 0.25, RAIL_Z), colTop, 0.015, postM));
