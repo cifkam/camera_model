@@ -325,9 +325,9 @@ const mats = {};
 function mat(color, opts = {}) {
   const key = color + JSON.stringify(opts);
   if (!mats[key]) {
-    const { opacity = 1, basic = false, side = THREE.DoubleSide } = opts;
+    const { opacity = 1, basic = false, side = THREE.DoubleSide, depthTest = true } = opts;
     const M = basic ? THREE.MeshBasicMaterial : THREE.MeshStandardMaterial;
-    mats[key] = new M({ color, transparent: opacity < 1, opacity, side, depthWrite: opacity >= 1,
+    mats[key] = new M({ color, transparent: opacity < 1, opacity, side, depthWrite: opacity >= 1, depthTest,
       ...(basic ? {} : { roughness: 0.6, metalness: 0.1 }) });
   }
   return mats[key];
@@ -358,9 +358,38 @@ function polygon(pts, m) {
   g.computeVertexNormals();
   return new THREE.Mesh(g, m);
 }
-function outline(pts, color) {
+function outline(pts, color, { opacity = 0.9, depthTest = true } = {}) {
   const g = new THREE.BufferGeometry().setFromPoints(pts);
-  return new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+  return new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest }));
+}
+// Below-ground parts are drawn faintly and without depth test, so they stay visible through the opaque ground
+const GROUND_UP = { n: new THREE.Vector3(0, 1, 0), d: 0 }, GROUND_DOWN = { n: new THREE.Vector3(0, -1, 0), d: 0 };
+// (the split is only made while the ground is drawn; its cut edge is not outlined, so no seam shows)
+function drawPlanePoly(group, poly, color, opacity) {
+  if (poly.length < 3) return;
+  if (!P.showGround) { group.add(polygon(poly, mat(color, { opacity, basic: true }))); group.add(outline(poly, color)); return; }
+  const notCut = (a, b) => !(Math.abs(a.y) < 1e-6 && Math.abs(b.y) < 1e-6);
+  const edges = (pts, opts) => {
+    const segs = [];
+    for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; if (notCut(a, b)) segs.push(a, b); }
+    return segs.length ? new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs),
+      new THREE.LineBasicMaterial({ color, transparent: true, ...opts })) : new THREE.Group();
+  };
+  const above = clipPolygonToHalfSpace(poly, GROUND_UP), below = clipPolygonToHalfSpace(poly, GROUND_DOWN);
+  if (above.length >= 3) { group.add(polygon(above, mat(color, { opacity, basic: true }))); group.add(edges(above, { opacity: 0.9 })); }
+  if (below.length >= 3) {
+    group.add(polygon(below, mat(color, { opacity: opacity * 0.5, basic: true, depthTest: false })));
+    group.add(edges(below, { opacity: 0.45, depthTest: false }));
+  }
+}
+function drawLineSeg(group, seg, color, r) {
+  const [a, b] = seg, parts = [];
+  if (P.showGround && (a.y < 0) !== (b.y < 0)) { const m = a.clone().lerp(b, a.y / (a.y - b.y)); parts.push([a, m], [m, b]); }
+  else parts.push([a, b]);
+  for (const [p, q] of parts) {
+    const under = P.showGround && p.y + q.y < 0;
+    group.add(tube(p, q, r, mat(color, under ? { basic: true, opacity: 0.4, depthTest: false } : { basic: true })));
+  }
 }
 function polyhedronMesh(faces, m) {
   const pos = [];
@@ -550,21 +579,14 @@ function update() {
   const camBox = { min: new THREE.Vector3(-0.45, -E, -ext - 0.6), max: new THREE.Vector3(0.45, E, 0.6) };
 
   const posfColor = virtual ? COL.posfVirtual : COL.posf;
-  // only the real part of each object-space plane (beyond the front focal plane) is drawn
-  const realPart = pl => clipPolygonToHalfSpace(clipPlaneToBox(pl, posfBox.min, posfBox.max), focalPlane);
-  if (posf && P.showFullPlane) {
-    const poly = realPart(posf);
-    dyn.add(polygon(poly, mat(posfColor, { opacity: P.showSharpArea ? 0.15 : 0.35, basic: true })));
-    dyn.add(outline(poly, posfColor));
-  }
-  if (P.showDofPlanes) {
-    for (const pl of [nearPlane, farPlane]) {
-      if (!pl) continue;
-      const poly = realPart(pl);
-      dyn.add(polygon(poly, mat(COL.dof, { opacity: 0.07, basic: true })));
-      dyn.add(outline(poly, COL.dof));
-    }
-  }
+  // Extended planes reach below ground. The plane of sharp focus is drawn back to the lens
+  // plane, i.e. to the Scheimpflug line (the classic picture); the DoF limit planes end at the
+  // front focal plane, where they meet the hinge line, since the wedge has its apex there.
+  const fullBox = { min: new THREE.Vector3(-E, -E, -0.6), max: new THREE.Vector3(E, E, 2 * E) };
+  const extended = (pl, cut) => clipPolygonToHalfSpace(clipPlaneToBox(pl, fullBox.min, fullBox.max), cut);
+  if (posf && P.showFullPlane) drawPlanePoly(dyn, extended(posf, lensPlane), posfColor, P.showSharpArea ? 0.15 : 0.35);
+  if (P.showDofPlanes)
+    for (const pl of [nearPlane, farPlane]) if (pl) drawPlanePoly(dyn, extended(pl, focalPlane), COL.dof, 0.07);
 
   // --- field of view: film gate corners through the lens centre ----------------
   // Chief rays pass through the lens centre undeviated, so the object-space frustum
@@ -653,11 +675,8 @@ function update() {
   const axisIv = focusInterval(B, filmL, f, k, nl);
   const dofInfo = { farInfinite: ivs.some(iv => iv && !Number.isFinite(iv.tFar)), missing: ivs.filter(iv => !iv).length };
   if (P.showPlanes) {
-    for (const [pl, c] of [[filmPlane, COL.film], [lensPlane, COL.lens]]) {
-      const poly = clipPlaneToBox(pl, camBox.min, camBox.max);
-      dyn.add(polygon(poly, mat(c, { opacity: 0.12, basic: true })));
-      dyn.add(outline(poly, c));
-    }
+    for (const [pl, c] of [[filmPlane, COL.film], [lensPlane, COL.lens]])
+      drawPlanePoly(dyn, clipPlaneToBox(pl, camBox.min, camBox.max), c, 0.12);
   }
 
   // lens axis and on-axis focus point
@@ -674,10 +693,10 @@ function update() {
   if (P.showLines) {
     schLine = intersectPlanes(filmPlane, lensPlane);
     const seg = schLine && clipLineToBox(schLine, bigBox.min, bigBox.max);
-    if (seg) dyn.add(tube(seg[0], seg[1], 0.008, mat(COL.scheimpflug, { basic: true })));
+    if (seg) drawLineSeg(dyn, seg, COL.scheimpflug, 0.008);
     hingeLine = posf && intersectPlanes(posf, focalPlane);
     const seg2 = hingeLine && clipLineToBox(hingeLine, bigBox.min, bigBox.max);
-    if (seg2) dyn.add(tube(seg2[0], seg2[1], 0.008, mat(COL.hinge, { basic: true })));
+    if (seg2) drawLineSeg(dyn, seg2, COL.hinge, 0.008);
   }
 
   // --- readout ----------------------------------------------------------------
