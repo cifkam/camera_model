@@ -53,29 +53,42 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GUI, NumberController } from 'three/addons/libs/lil-gui.module.min.js';
 
-// lil-gui number controller whose slider track is logarithmic; the number field stays in real units.
-// The slider maps the pointer to a linear value in [min, max] and passes it to _snapClampSetValue
-// (after _setDraggingStyle(true)), so that linear value is reinterpreted as a position on a log scale.
-class LogNumberController extends NumberController {
-  _logFrac(v) { return (Math.log(v) - Math.log(this._min)) / (Math.log(this._max) - Math.log(this._min)); }
+// lil-gui number controller whose slider track follows a non-linear mapping; the number field stays
+// in real units. lil-gui maps the pointer to a linear value in [min, max] and passes it to
+// _snapClampSetValue (after _setDraggingStyle(true)); that linear value is reinterpreted through the
+// mapping, given as { fromFrac(t, min, max) -> value, toFrac(value, min, max) -> t } with t in [0, 1].
+class MappedNumberController extends NumberController {
+  constructor(parent, object, property, min, max, step, map) {
+    super(parent, object, property, min, max, step);
+    this._map = map;
+    this.updateDisplay();
+  }
   _setDraggingStyle(active, type) {
     this._sliderDrag = active && type !== 'vertical';
     return super._setDraggingStyle(active, type);
   }
   _snapClampSetValue(v) {
-    if (this._sliderDrag && this._min > 0) {
-      const frac = (v - this._min) / (this._max - this._min);
-      v = Math.exp(Math.log(this._min) + frac * (Math.log(this._max) - Math.log(this._min)));
-    }
+    if (this._sliderDrag && this._map) v = this._map.fromFrac((v - this._min) / (this._max - this._min), this._min, this._max);
     return super._snapClampSetValue(v);
   }
   updateDisplay() {
     super.updateDisplay();
-    if (this._hasSlider && this._min > 0)
-      this.$fill.style.width = 100 * Math.max(0, Math.min(1, this._logFrac(this.getValue()))) + '%';
+    if (this._hasSlider && this._map)
+      this.$fill.style.width = 100 * Math.max(0, Math.min(1, this._map.toFrac(this.getValue(), this._min, this._max))) + '%';
     return this;
   }
 }
+// logarithmic track (min > 0): equal track lengths are equal ratios
+const LOG_MAP = {
+  fromFrac: (t, lo, hi) => lo > 0 ? Math.exp(Math.log(lo) + t * (Math.log(hi) - Math.log(lo))) : lo + t * (hi - lo),
+  toFrac: (v, lo, hi) => lo > 0 ? (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) : (v - lo) / (hi - lo),
+};
+// symmetric power track for ranges [-L, L]: fine near zero, coarse towards the limits (value = ±L·|u|^p)
+const symPowMap = p => ({
+  fromFrac: (t, lo, hi) => { const u = 2 * t - 1; return Math.sign(u) * hi * Math.abs(u) ** p; },
+  toFrac: (v, lo, hi) => (Math.sign(v) * (Math.abs(v) / hi) ** (1 / p) + 1) / 2,
+});
+const ANGLE_MAP = symPowMap(2);
 
 // ----------------------------------------------------------------------------
 // Parameters (camera dimensions in mm, scene in metres)
@@ -787,7 +800,7 @@ const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
 fL.add(P, 'autoLens').name('auto lens & focus');
 const R0 = formatRanges();
 const extCtrl = fL.add(P, 'extension', ...R0.extension, 0.1).name('standard separation (mm)').decimals(2);
-focusCtrl = new LogNumberController(fL, P, 'focusDist', 0.2, FOCUS_SLIDER_CAP, 0.01).name('focus distance (m)').decimals(2);
+focusCtrl = new MappedNumberController(fL, P, 'focusDist', 0.2, FOCUS_SLIDER_CAP, 0.01, LOG_MAP).name('focus distance (m)').decimals(2);
 const focalCtrl = fL.add(P, 'focal', ...R0.focal, 1).name('focal length (mm)');
 const icCtrl = fL.add(P, 'imageCircle', ...R0.imageCircle, 1).name('image circle at ∞ (mm)');
 const shiftCtrls = [];   // rise/fall and shift sliders of both standards, filled in below
@@ -819,14 +832,14 @@ formatCtrl.onChange(v => {
 });
 
 const fF = gui.addFolder('Front standard (lens)');
-fF.add(P, 'frontTilt', -30, 30, 0.25).name('tilt ° (+ top forward)');
-fF.add(P, 'frontSwing', -30, 30, 0.25).name('swing ° (+ to left)');
+new MappedNumberController(fF, P, 'frontTilt', -30, 30, 0.25, ANGLE_MAP).name('tilt ° (+ top forward)');
+new MappedNumberController(fF, P, 'frontSwing', -30, 30, 0.25, ANGLE_MAP).name('swing ° (+ to left)');
 shiftCtrls.push(fF.add(P, 'frontRise', -R0.shift, R0.shift, 1).name('rise / fall (mm)'),
                 fF.add(P, 'frontShift', -R0.shift, R0.shift, 1).name('shift (mm)'));
 
 const fR = gui.addFolder('Rear standard (film)');
-fR.add(P, 'rearTilt', -30, 30, 0.25).name('tilt ° (+ top forward)');
-fR.add(P, 'rearSwing', -30, 30, 0.25).name('swing ° (+ to left)');
+new MappedNumberController(fR, P, 'rearTilt', -30, 30, 0.25, ANGLE_MAP).name('tilt ° (+ top forward)');
+new MappedNumberController(fR, P, 'rearSwing', -30, 30, 0.25, ANGLE_MAP).name('swing ° (+ to left)');
 shiftCtrls.push(fR.add(P, 'rearRise', -R0.shift, R0.shift, 1).name('rise / fall (mm)'),
                 fR.add(P, 'rearShift', -R0.shift, R0.shift, 1).name('shift (mm)'));
 gui.add(P, 'tiltPivot', ['axis', 'base']).name('tilt pivot');
@@ -862,6 +875,29 @@ fS.add(P, 'cameraHeight', 0.1, 2.5, 0.05).name('lens height (m)');
 fS.add(P, 'extent', 1, 40, 0.5).name('scene extent (m)');
 fS.close();
 
+// Mouse wheel on sliders: lil-gui scales the change by the raw wheel delta, which on many systems is
+// several steps per notch and piles up when scrolling fast. Replace it: one notch = one step
+// (ten with Shift), touchpad pixel deltas are accumulated into notches, and a controller may define
+// its own wheelFn(value, notches) (the focus slider scrolls by 2 % per notch).
+function installWheel(ctrl) {
+  let acc = 0;
+  ctrl.$widget.addEventListener('wheel', e => {
+    const onSlider = ctrl.$slider && ctrl.$slider.contains(e.target);
+    const onInput = ctrl.$input.contains(e.target) && ctrl._inputFocused;
+    if (!onSlider && !onInput) return;
+    if (onSlider && Math.abs(e.deltaX) < Math.abs(e.deltaY) && ctrl._hasScrollBar) return;   // let a scrollable panel scroll
+    e.preventDefault(); e.stopImmediatePropagation();
+    acc += e.deltaY / (e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1);   // one notch ≈ 100 px (Chrome) or 3 lines (Firefox)
+    const n = Math.trunc(acc);
+    if (!n) return;
+    acc -= n;
+    const notches = -n * (e.shiftKey ? 10 : 1), v = ctrl.getValue();
+    ctrl._snapClampSetValue(ctrl.wheelFn ? ctrl.wheelFn(v, notches) : v + notches * ctrl._step);
+    ctrl._callOnFinishChange();
+  }, { capture: true, passive: false });
+}
+focusCtrl.wheelFn = (v, n) => v * Math.pow(1.02, n);
+gui.controllersRecursive().forEach(c => { if (c instanceof NumberController) installWheel(c); });
 
 // the panel-wide handler sees which controller changed, so the focus slider can drive the separation
 gui.onChange(e => {
