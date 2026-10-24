@@ -111,10 +111,15 @@ const separationFor = (f, d) => f * d / (d - f);   // kept exact: short lenses a
 const FORMATS = {
   '8x10"': [245, 195], '5x7"': [170, 120], '4x5"': [120, 95],
   '6x9 roll': [84, 56], '6x7 roll': [69.5, 56], '6x6 roll': [56, 56], '6x4.5 roll': [56, 41.5], '35 mm': [36, 24],
+  'APS-C': [23.5, 15.6], 'phone 1/1.56"': [8.2, 6.2],
 };
 // typical image circle (mm at infinity) of a lens made for the format: diagonal plus room for movements
 const IMAGE_CIRCLE = { '8x10"': 420, '5x7"': 300, '4x5"': 220,
-                       '6x9 roll': 125, '6x7 roll': 100, '6x6 roll': 90, '6x4.5 roll': 80, '35 mm': 45 };
+                       '6x9 roll': 125, '6x7 roll': 100, '6x6 roll': 90, '6x4.5 roll': 80, '35 mm': 45,
+                       'APS-C': 30, 'phone 1/1.56"': 11 };
+// camera mesh proportions that follow the format: frame bar width and lens barrel radius (m)
+const frameBar = ih => THREE.MathUtils.clamp(0.32 * ih, 0.006, 0.03);
+const lensRadius = (iw, ih) => THREE.MathUtils.clamp(0.2 * Math.hypot(iw, ih), 0.004, 0.03);
 
 const P = {
   focal: 150,          // lens focal length, mm
@@ -478,10 +483,11 @@ function buildStandard(pose, iw, ih, bar, depth, kind) {
   } else {
     const board = new THREE.Mesh(new THREE.PlaneGeometry(fw - 2 * bar, fh - 2 * bar), mat(0x202020, { opacity: 0.95 }));
     g.add(board);
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.055, 32), mat(0x9aa0a8, { opacity: 1 }));
+    const lr = lensRadius(iw, ih);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(lr, lr, 1.85 * lr, 32), mat(0x9aa0a8, { opacity: 1 }));
     barrel.rotation.x = Math.PI / 2; g.add(barrel);
-    for (const z of [0.0285, -0.0285]) {
-      const el = new THREE.Mesh(new THREE.CircleGeometry(0.026, 32), mat(0x5aa9ff, { opacity: 0.55 }));
+    for (const z of [0.95 * lr, -0.95 * lr]) {
+      const el = new THREE.Mesh(new THREE.CircleGeometry(0.87 * lr, 32), mat(0x5aa9ff, { opacity: 0.55 }));
       el.position.z = z; g.add(el);
     }
   }
@@ -498,7 +504,7 @@ const FOCUS_SLIDER_CAP = 30;                   // m; the far end of the slider r
 const BEHIND = 2;                              // m of scene kept behind the lens (ground, planes, lines)
 
 // frame outer height for the current format (tilt pivot for base tilts), m
-const frameHeight = () => FORMATS[P.format][1] * MM + 0.08;
+const frameHeight = () => { const ih = FORMATS[P.format][1] * MM; return ih + 2 * frameBar(ih) + 0.02; };
 
 // On-axis film distance (lens centre to film plane along the lens axis, m) for a
 // given separation (m) with the current movements. Affine in the separation.
@@ -528,7 +534,7 @@ function update() {
   clearGroup(dyn);
   const E = P.extent, h = P.cameraHeight, f = P.focal * MM, ext = P.extension * MM;
   const [iw, ih] = FORMATS[P.format].map(v => v * MM);
-  const bar = 0.03, depth = 0.014;
+  const bar = frameBar(ih), depth = 0.014;
   const fw = iw + 2 * bar + 0.02, fh = ih + 2 * bar + 0.02;
   const railY = h - fh / 2 - 0.06;
 
@@ -852,7 +858,7 @@ gui.add({ reset: () => { Object.assign(P, ZERO); gui.controllersRecursive().forE
   .name('Reset movements');
 
 const fD = gui.addFolder('Depth of field');
-fD.add(P, 'fnumber', [2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90]).name('f-number');
+fD.add(P, 'fnumber', [1, 1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90]).name('f-number');
 fD.add(P, 'cocMode', ['from print', 'manual']).name('circle of confusion');
 cocCtrls.print.push(
   fD.add(P, 'printLong', 10, 200, 1).name('print long edge (cm)'),
