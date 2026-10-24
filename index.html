@@ -389,6 +389,7 @@ function outline(pts, color, { opacity = 0.9, depthTest = true } = {}) {
 }
 // Below-ground parts are drawn faintly and without depth test, so they stay visible through the opaque ground
 const UNDER_FILL = 0.2, UNDER_LINE = 0.2;   // opacity factor for fills, absolute opacity for outlines, below ground
+const UNDER_FILLS_VISIBLE = false;           // false: below ground only the outlines and rays are drawn, no fills
 const GROUND_UP = { n: new THREE.Vector3(0, 1, 0), d: 0 }, GROUND_DOWN = { n: new THREE.Vector3(0, -1, 0), d: 0 };
 // (the split is only made while the ground is drawn; its cut edge is not outlined, so no seam shows)
 function drawPlanePoly(group, poly, color, opacity) {
@@ -404,7 +405,7 @@ function drawPlanePoly(group, poly, color, opacity) {
   const above = clipPolygonToHalfSpace(poly, GROUND_UP), below = clipPolygonToHalfSpace(poly, GROUND_DOWN);
   if (above.length >= 3) { group.add(polygon(above, mat(color, { opacity, basic: true }))); group.add(edges(above, { opacity: 0.9 })); }
   if (below.length >= 3 && P.showUnderground) {
-    group.add(polygon(below, mat(color, { opacity: opacity * UNDER_FILL, basic: true, depthTest: false })));
+    if (UNDER_FILLS_VISIBLE) group.add(polygon(below, mat(color, { opacity: opacity * UNDER_FILL, basic: true, depthTest: false })));
     group.add(edges(below, { opacity: UNDER_LINE, depthTest: false }));
   }
 }
@@ -418,7 +419,8 @@ function drawFramedPolys(group, polys, color, opacity, outlineColor, box) {
     if (under && !P.showUnderground) continue;
     const faces = list.filter(p => p.length >= 3);
     if (!faces.length) continue;
-    group.add(polyhedronMesh(faces, mat(color, { opacity: under ? opacity * UNDER_FILL : opacity, basic: true, depthTest: !under })));
+    if (!under || UNDER_FILLS_VISIBLE)
+      group.add(polyhedronMesh(faces, mat(color, { opacity: under ? opacity * UNDER_FILL : opacity, basic: true, depthTest: !under })));
     if (outlineColor === null) continue;
     for (const fc of faces)
       group.add(outlineEdges(fc, outlineColor, box, { opacity: under ? UNDER_LINE : 0.9, depthTest: !under, cutY0: P.showGround }));
