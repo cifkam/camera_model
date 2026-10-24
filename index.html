@@ -122,6 +122,7 @@ const P = {
   focusDist: DEFAULT_FOCUS * MM,                  // on-axis focus distance from the lens, m (linked to extension)
   format: '4x5"',
   autoLens: true,      // on format change: focal length = format diagonal, image circle = typical for the format
+  refocusOnFocal: true,   // on focal length change: keep the focus distance (separation follows the lens)
   frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0,   // deg, deg, mm, mm
   rearTilt: 0,  rearSwing: 0,  rearRise: 0,  rearShift: 0,
   tiltPivot: 'axis',   // 'axis' (about standard centre) or 'base' (about bottom edge)
@@ -799,11 +800,12 @@ document.getElementById('infoTitle').addEventListener('click', () => infoEl.clas
 const gui = new GUI({ title: 'View camera', width: 310 });
 const fL = gui.addFolder('Lens & focus');
 const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
-fL.add(P, 'autoLens').name('auto lens & focus');
+fL.add(P, 'autoLens').name('set lens when changing format');
 const R0 = formatRanges();
 const extCtrl = fL.add(P, 'extension', ...R0.extension, 0.1).name('standard separation (mm)').decimals(2);
 focusCtrl = new MappedNumberController(fL, P, 'focusDist', 0.2, FOCUS_SLIDER_CAP, 0.01, LOG_MAP).name('focus distance (m)').decimals(2);
 const focalCtrl = fL.add(P, 'focal', ...R0.focal, 1).name('focal length (mm)');
+fL.add(P, 'refocusOnFocal').name('keep focus when changing lens');
 const icCtrl = fL.add(P, 'imageCircle', ...R0.imageCircle, 1).name('image circle at ∞ (mm)');
 const shiftCtrls = [];   // rise/fall and shift sliders of both standards, filled in below
 // re-range the format-dependent sliders and clamp their values into the new range
@@ -904,6 +906,9 @@ gui.controllersRecursive().forEach(c => { if (c instanceof NumberController) ins
 // the panel-wide handler sees which controller changed, so the focus slider can drive the separation
 gui.onChange(e => {
   if (e.controller === focusCtrl) { setSeparationForFocus(e.value); extCtrl.updateDisplay(); }
+  // a new focal length = a different lens: refocus it on the same subject distance, so the
+  // separation follows the focal length and the field of view scales inversely with it
+  if (e.controller === focalCtrl && P.refocusOnFocal) { setSeparationForFocus(P.focusDist); extCtrl.updateDisplay(); }
   update();
 });
 if (matchMedia('(max-width: 700px)').matches) gui.close();   // phones: start with the 3D view, tap the title to open
