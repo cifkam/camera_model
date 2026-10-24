@@ -113,7 +113,7 @@ const P = {
   rearTilt: 0,  rearSwing: 0,  rearRise: 0,  rearShift: 0,
   tiltPivot: 'axis',   // 'axis' (about standard centre) or 'base' (about bottom edge)
   cameraHeight: 1.2,   // optical axis height above ground, m
-  extent: 8,           // scene half-extent, m
+  extent: 25,          // scene extent, m (to each side and in front of the lens)
   fnumber: 11,
   cocMode: 'from print',   // circle of confusion from print size + viewing, or 'manual'
   printLong: 40,           // print long edge, cm
@@ -125,6 +125,7 @@ const P = {
   showCoverage: true,
   showFov: true, showSharpArea: true, showFullPlane: false,
   showPlanes: true, showLines: false, showBellows: true, showGround: true,
+  showUnderground: true,   // draw the faint parts below the ground (only matters while the ground is shown)
 };
 
 const COL = {
@@ -251,6 +252,17 @@ function clipPlaneToBox(pl, min, max) {
   return pts.length < 3 ? [] : sortAroundCentroid(pts, pl.n);
 }
 
+// distance along a ray (origin p, unit direction dir, inside the box) to the point where it leaves the box
+function rayExitT(p, dir, min, max) {
+  let t = Infinity;
+  for (const k of ['x', 'y', 'z']) {
+    if (Math.abs(dir[k]) < 1e-12) continue;
+    const tk = ((dir[k] > 0 ? max[k] : min[k]) - p[k]) / dir[k];
+    if (tk > 0) t = Math.min(t, tk);
+  }
+  return Number.isFinite(t) ? t : 0;
+}
+
 // Sutherland–Hodgman clip of a convex polygon, keeping the side where sdf(pl) >= 0
 function clipPolygonToHalfSpace(pts, pl) {
   const out = [];
@@ -305,7 +317,7 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1c1e22);
-scene.fog = new THREE.Fog(0x1c1e22, 12, 40);
+scene.fog = new THREE.Fog(0x1c1e22, 30, 140);   // beyond the largest scene extent, so nothing clipped fades out entirely
 
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 200);
 camera.position.set(-2.8, 2.2, -2.0);
@@ -363,6 +375,7 @@ function outline(pts, color, { opacity = 0.9, depthTest = true } = {}) {
   return new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest }));
 }
 // Below-ground parts are drawn faintly and without depth test, so they stay visible through the opaque ground
+const UNDER_FILL = 0.2, UNDER_LINE = 0.2;   // opacity factor for fills, absolute opacity for outlines, below ground
 const GROUND_UP = { n: new THREE.Vector3(0, 1, 0), d: 0 }, GROUND_DOWN = { n: new THREE.Vector3(0, -1, 0), d: 0 };
 // (the split is only made while the ground is drawn; its cut edge is not outlined, so no seam shows)
 function drawPlanePoly(group, poly, color, opacity) {
@@ -377,18 +390,35 @@ function drawPlanePoly(group, poly, color, opacity) {
   };
   const above = clipPolygonToHalfSpace(poly, GROUND_UP), below = clipPolygonToHalfSpace(poly, GROUND_DOWN);
   if (above.length >= 3) { group.add(polygon(above, mat(color, { opacity, basic: true }))); group.add(edges(above, { opacity: 0.9 })); }
-  if (below.length >= 3) {
-    group.add(polygon(below, mat(color, { opacity: opacity * 0.5, basic: true, depthTest: false })));
-    group.add(edges(below, { opacity: 0.45, depthTest: false }));
+  if (below.length >= 3 && P.showUnderground) {
+    group.add(polygon(below, mat(color, { opacity: opacity * UNDER_FILL, basic: true, depthTest: false })));
+    group.add(edges(below, { opacity: UNDER_LINE, depthTest: false }));
   }
 }
-function drawLineSeg(group, seg, color, r) {
+// Framed geometry (sharp area, in-focus volume): while the ground is drawn, the part below it
+// is drawn at reduced opacity and without depth test so it shows through the floor
+function drawFramedPolys(group, polys, color, opacity, outlineColor, box) {
+  const parts = P.showGround
+    ? [[polys.map(p => clipPolygonToHalfSpace(p, GROUND_UP)), false], [polys.map(p => clipPolygonToHalfSpace(p, GROUND_DOWN)), true]]
+    : [[polys, false]];
+  for (const [list, under] of parts) {
+    if (under && !P.showUnderground) continue;
+    const faces = list.filter(p => p.length >= 3);
+    if (!faces.length) continue;
+    group.add(polyhedronMesh(faces, mat(color, { opacity: under ? opacity * UNDER_FILL : opacity, basic: true, depthTest: !under })));
+    if (outlineColor === null) continue;
+    for (const fc of faces)
+      group.add(outlineEdges(fc, outlineColor, box, { opacity: under ? UNDER_LINE : 0.9, depthTest: !under, cutY0: P.showGround }));
+  }
+}
+function drawLineSeg(group, seg, color, r, opacity = 1) {
   const [a, b] = seg, parts = [];
   if (P.showGround && (a.y < 0) !== (b.y < 0)) { const m = a.clone().lerp(b, a.y / (a.y - b.y)); parts.push([a, m], [m, b]); }
   else parts.push([a, b]);
   for (const [p, q] of parts) {
     const under = P.showGround && p.y + q.y < 0;
-    group.add(tube(p, q, r, mat(color, under ? { basic: true, opacity: 0.4, depthTest: false } : { basic: true })));
+    if (under && !P.showUnderground) continue;
+    group.add(tube(p, q, r, mat(color, under ? { basic: true, opacity: opacity * UNDER_FILL, depthTest: false } : { basic: true, opacity })));
   }
 }
 function polyhedronMesh(faces, m) {
@@ -400,9 +430,10 @@ function polyhedronMesh(faces, m) {
   return new THREE.Mesh(g, m);
 }
 // polygon outline that skips edges lying on a face of the clipping box (those are cuts, not real boundaries)
-function outlineEdges(pts, color, box) {
+function outlineEdges(pts, color, box, { opacity = 0.9, depthTest = true, cutY0 = false } = {}) {
   const onFace = (p, q) => ['x', 'y', 'z'].some(k =>
-    [box.min[k], box.max[k]].some(v => Math.abs(p[k] - v) < 1e-6 && Math.abs(q[k] - v) < 1e-6));
+    [box.min[k], box.max[k]].some(v => Math.abs(p[k] - v) < 1e-6 && Math.abs(q[k] - v) < 1e-6))
+    || (cutY0 && Math.abs(p.y) < 1e-6 && Math.abs(q.y) < 1e-6);
   const segs = [];
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i], b = pts[(i + 1) % pts.length];
@@ -410,7 +441,7 @@ function outlineEdges(pts, color, box) {
   }
   if (!segs.length) return new THREE.Group();
   return new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs),
-    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }));
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthTest }));
 }
 
 function buildStandard(pose, iw, ih, bar, depth, kind) {
@@ -448,6 +479,7 @@ const infoEl = document.getElementById('info');
 const cocCtrls = { print: [], manual: [] };   // filled in by the GUI section
 let focusCtrl = null;                          // the focus-distance slider, set by the GUI section
 const FOCUS_SLIDER_CAP = 30;                   // m; the far end of the slider runs to infinity, so cap it
+const BEHIND = 2;                              // m of scene kept behind the lens (ground, planes, lines)
 
 // frame outer height for the current format (tilt pivot for base tilts), m
 const frameHeight = () => FORMATS[P.format][1] * MM + 0.08;
@@ -532,13 +564,20 @@ function update() {
 
   // --- ground -----------------------------------------------------------------
   if (P.showGround) {
-    const grid = new THREE.GridHelper(4 * E, Math.round(8 * E), 0x555a66, 0x343842);
-    grid.position.set(0, 0, E); dyn.add(grid);
+    // rectangular grid matching the clipping box footprint: x in [-E, E], z in [-1, 2E], 0.5 m cells
+    const gx0 = -E, gx1 = E, gz0 = -BEHIND, gz1 = E, step = 0.5;
+    const minor = [], major = [];
+    for (let x = Math.ceil(gx0 / step) * step; x <= gx1 + 1e-9; x += step)
+      (Math.abs(x) < 1e-9 ? major : minor).push(new THREE.Vector3(x, 0, gz0), new THREE.Vector3(x, 0, gz1));
+    for (let z = Math.ceil(gz0 / step) * step; z <= gz1 + 1e-9; z += step)
+      (Math.abs(z) < 1e-9 ? major : minor).push(new THREE.Vector3(gx0, 0, z), new THREE.Vector3(gx1, 0, z));
+    for (const [pts, color] of [[minor, 0x343842], [major, 0x555a66]])
+      dyn.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color })));
     // opaque and depth-writing, so anything below ground is hidden; offset back to avoid z-fighting with the grid
     mats.ground ??= new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.9,
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(4 * E, 4 * E), mats.ground);
-    ground.rotation.x = -Math.PI / 2; ground.position.set(0, -0.001, E); dyn.add(ground);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(gx1 - gx0, gz1 - gz0), mats.ground);
+    ground.rotation.x = -Math.PI / 2; ground.position.set(0, -0.001, (gz0 + gz1) / 2); dyn.add(ground);
   }
 
   // --- optics -----------------------------------------------------------------
@@ -576,15 +615,19 @@ function update() {
     focusCtrl.updateDisplay();
   }
 
-  const bigBox = { min: new THREE.Vector3(-E, -E, -1), max: new THREE.Vector3(E, E, 2 * E) };
-  const posfBox = { min: new THREE.Vector3(-E, 0, -0.6), max: new THREE.Vector3(E, E, 2 * E) };
-  const camBox = { min: new THREE.Vector3(-0.45, -E, -ext - 0.6), max: new THREE.Vector3(0.45, E, 0.6) };
+  // One scene box for everything that gets clipped: E to each side and forward of the lens,
+  // BEHIND metres behind it, E below ground and E above the lens.
+  const SB = { min: new THREE.Vector3(-E, -E, -BEHIND), max: new THREE.Vector3(E, h + E, E) };
+  const bigBox = SB;
+  // framed things (sharp area, in-focus volume) stop at the ground while it is drawn, otherwise they use the whole box
+  const posfBox = SB;   // framed things are split at the ground when drawn (see drawFramedPolys)
+  const camBox = { min: new THREE.Vector3(-0.45, -E, -ext - 0.6), max: new THREE.Vector3(0.45, h + E, 0.6) };
 
   const posfColor = virtual ? COL.posfVirtual : COL.posf;
   // Extended planes reach below ground. The plane of sharp focus is drawn back to the lens
   // plane, i.e. to the Scheimpflug line (the classic picture); the DoF limit planes end at the
   // front focal plane, where they meet the hinge line, since the wedge has its apex there.
-  const fullBox = { min: new THREE.Vector3(-E, -E, -0.6), max: new THREE.Vector3(E, E, 2 * E) };
+  const fullBox = SB;
   const extended = (pl, cut) => clipPolygonToHalfSpace(clipPlaneToBox(pl, fullBox.min, fullBox.max), cut);
   if (posf && P.showFullPlane) drawPlanePoly(dyn, extended(posf, lensPlane), posfColor, P.showSharpArea ? 0.15 : 0.35);
   if (P.showDofPlanes)
@@ -616,18 +659,15 @@ function update() {
   const sharpQuad = hits.length && hits.every(Boolean) ? hits : null;
 
   if (P.showFov) {
-    const rayM = mat(COL.fov, { opacity: 0.85, basic: true }), vigM = mat(COL.vignette, { opacity: 0.9, basic: true });
-    const far = rayDirs.map(d => Cl.clone().addScaledVector(d, 3 * E));
+    const far = rayDirs.map(d => Cl.clone().addScaledVector(d, rayExitT(Cl, d, SB.min, SB.max)));
     for (let i = 0; i < 4; i++) {
-      const m = corVig[i] ? vigM : rayM;
-      dyn.add(tube(gate[i], Cl, 0.0015, m));                       // inside the camera
-      dyn.add(tube(Cl, far[i], 0.0025, m));
+      const c = corVig[i] ? COL.vignette : COL.fov;
+      dyn.add(tube(gate[i], Cl, 0.0015, mat(c, { opacity: 0.85, basic: true })));   // inside the camera
+      drawLineSeg(dyn, [Cl, far[i]], c, 0.0025, 0.85);                             // split at the ground like the planes
     }
-    const pos = [];
-    for (let i = 0; i < 4; i++) pos.push(...Cl.toArray(), ...far[i].toArray(), ...far[(i + 1) % 4].toArray());
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    dyn.add(new THREE.Mesh(g, mat(COL.fov, { opacity: 0.06, basic: true })));
+    const sides = [];
+    for (let i = 0; i < 4; i++) sides.push([Cl.clone(), far[i].clone(), far[(i + 1) % 4].clone()]);
+    drawFramedPolys(dyn, sides, COL.fov, 0.06, null, SB);
   }
   if (P.showCoverage) {
     // outline of the coverage cone on the film plane: an ellipse, or a hyperbola branch for strong tilts
@@ -651,10 +691,7 @@ function update() {
   // cut at the scene box.
   let sharpPoly = posf ? clipPlaneToBox(posf, posfBox.min, posfBox.max) : [];
   for (const pl of [...frustum, focalPlane]) sharpPoly = clipPolygonToHalfSpace(sharpPoly, pl);
-  if (P.showSharpArea && sharpPoly.length >= 3) {
-    dyn.add(polygon(sharpPoly, mat(posfColor, { opacity: 0.6, basic: true })));
-    dyn.add(outlineEdges(sharpPoly, 0xffffff, posfBox));
-  }
+  if (P.showSharpArea && sharpPoly.length >= 3) drawFramedPolys(dyn, [sharpPoly], posfColor, 0.6, 0xffffff, posfBox);
 
   // --- depth of field volume inside the frame ---------------------------------
   // Acceptably sharp <=> |1 - s0| <= k. In image space that is the slab between the
@@ -669,10 +706,7 @@ function update() {
   if (farPlane) halfSpaces.push({ n: farPlane.n.clone().multiplyScalar(sgn), d: sgn * farPlane.d });
   let dofFaces = boxPolyhedron(posfBox.min, posfBox.max);
   for (const pl of halfSpaces) { dofFaces = clipPolyhedron(dofFaces, pl); if (!dofFaces.length) break; }
-  if (P.showDof && dofFaces.length) {
-    dyn.add(polyhedronMesh(dofFaces, mat(COL.dof, { opacity: 0.16, basic: true })));
-    for (const face of dofFaces) dyn.add(outlineEdges(face, COL.dof, posfBox));
-  }
+  if (P.showDof && dofFaces.length) drawFramedPolys(dyn, dofFaces, COL.dof, 0.16, COL.dof, posfBox);
   const ivs = rayDirs.map(d => focusInterval(B, filmL, f, k, d));
   const axisIv = focusInterval(B, filmL, f, k, nl);
   const dofInfo = { farInfinite: ivs.some(iv => iv && !Number.isFinite(iv.tFar)), missing: ivs.filter(iv => !iv).length };
@@ -683,7 +717,8 @@ function update() {
 
   // lens axis and on-axis focus point
   const tFocus = posf ? -sdf(posf, Cl) / posf.n.dot(nl) : Infinity;
-  const axisEnd = Cl.clone().addScaledVector(nl, Number.isFinite(tFocus) && tFocus > 0 ? Math.min(tFocus, 3 * E) : 2 * E);
+  const tExit = rayExitT(Cl, nl, SB.min, SB.max);
+  const axisEnd = Cl.clone().addScaledVector(nl, Number.isFinite(tFocus) && tFocus > 0 ? Math.min(tFocus, tExit) : tExit);
   dyn.add(tube(Cl.clone().addScaledVector(nl, -s), axisEnd, 0.004, mat(COL.axis, { opacity: 0.8, basic: true })));
   if (Number.isFinite(tFocus) && tFocus > 0) {
     const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), mat(COL.axis, { basic: true }));
@@ -819,11 +854,12 @@ fV.add(P, 'showPlanes').name('extended film & lens planes');
 fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
 fV.add(P, 'showBellows').name('bellows');
 fV.add(P, 'showGround').name('ground');
+fV.add(P, 'showUnderground').name('parts below the ground');
 fV.close();
 
 const fS = gui.addFolder('Scene');
 fS.add(P, 'cameraHeight', 0.1, 2.5, 0.05).name('lens height (m)');
-fS.add(P, 'extent', 1, 12, 0.5).name('scene extent (m)');
+fS.add(P, 'extent', 1, 40, 0.5).name('scene extent (m)');
 fS.close();
 
 
