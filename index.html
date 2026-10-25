@@ -33,6 +33,7 @@
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
   .warn { color: #ffb347; }
   #help { position: absolute; left: 12px; top: 12px; color: #aaa; font-size: 12px; pointer-events: none; }
+  body .lil-gui.root { border: 1px solid #666; }
   /* checkbox rows: checkbox first, label after, so long labels never push the box around */
   body .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
   body .lil-gui .controller.boolean .name { width: auto; min-width: 0; flex: 1 1 auto; }
@@ -134,6 +135,7 @@ const P = {
   tiltPivot: 'axis',   // 'axis' (about standard centre) or 'base' (about bottom edge)
   cameraHeight: 1.2,   // optical axis height above ground, m
   extent: 25,          // scene extent, m (to each side and in front of the lens)
+  background: 'dark',      // one of THEMES: background + fog, ground and grid colours as a matched set
   fnumber: 11,
   cocMode: 'from print',   // circle of confusion from print size + viewing, or 'manual'
   printLong: 40,           // print long edge, cm
@@ -149,6 +151,15 @@ const P = {
   showUnderground: true,   // draw the faint parts below the ground (only matters while the ground is shown)
 };
 
+// scene backgrounds: background + fog, ground slab and grid colours as matched sets
+const THEMES = {
+  // grid lines are chosen for a similar contrast against the ground in every set (~1.45× minor, ~2.5× major)
+  black: { bg: 0x000000, ground: 0x0a0a0a, gridMinor: 0x2c2c2c, gridMajor: 0x5c5c5c },
+  dark:  { bg: 0x1c1e22, ground: 0x23262c, gridMinor: 0x3b4050, gridMajor: 0x666e85 },
+  grey:  { bg: 0x6b6f78, ground: 0x7a7e88, gridMinor: 0x959aa8, gridMajor: 0xc2c6d2 },
+  light: { bg: 0xe8e9ec, ground: 0xdcdde2, gridMinor: 0xb8bac4, gridMajor: 0x8a8c96 },
+  white: { bg: 0xffffff, ground: 0xf2f2f4, gridMinor: 0xcfcfd6, gridMajor: 0xa0a0a8 },
+};
 const COL = {
   posf: 0x4fe07a, posfVirtual: 0xff8a3d, film: 0xffffff, lens: 0x4fa8ff,
   scheimpflug: 0xff4fd8, hinge: 0xffd84f, axis: 0x9ad8ff, fov: 0xc9a0ff, dof: 0x3ee6ff, vignette: 0xff5252,
@@ -549,6 +560,9 @@ const sw = c => `<span class="sw" style="background:#${c.toString(16).padStart(6
 
 function update() {
   clearGroup(dyn);
+  const T = THEMES[P.background] || THEMES.dark;
+  scene.background.set(T.bg);
+  scene.fog.color.set(T.bg);
   const E = P.extent, h = P.cameraHeight, f = P.focal * MM, ext = P.extension * MM;
   const [iw, ih] = FORMATS[P.format].map(v => v * MM);
   const bar = frameBar(ih), depth = 0.014;
@@ -610,11 +624,12 @@ function update() {
       (Math.abs(x) < 1e-9 ? major : minor).push(new THREE.Vector3(x, 0, gz0), new THREE.Vector3(x, 0, gz1));
     for (let z = Math.ceil(gz0 / step) * step; z <= gz1 + 1e-9; z += step)
       (Math.abs(z) < 1e-9 ? major : minor).push(new THREE.Vector3(gx0, 0, z), new THREE.Vector3(gx1, 0, z));
-    for (const [pts, color] of [[minor, 0x343842], [major, 0x555a66]])
+    for (const [pts, color] of [[minor, T.gridMinor], [major, T.gridMajor]])
       dyn.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color })));
     // opaque and depth-writing, so anything below ground is hidden; offset back to avoid z-fighting with the grid
-    mats.ground ??= new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.9,
+    mats.ground ??= new THREE.MeshStandardMaterial({ roughness: 0.9,
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    mats.ground.color.set(T.ground);
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(gx1 - gx0, gz1 - gz0), mats.ground);
     ground.rotation.x = -Math.PI / 2; ground.position.set(0, -0.001, (gz0 + gz1) / 2); dyn.add(ground);
   }
@@ -945,6 +960,7 @@ applyCameraMode();
 const fS = gui.addFolder('Scene');
 fS.add(P, 'cameraHeight', 0.1, 2.5, 0.05).name('lens height (m)');
 fS.add(P, 'extent', 1, 40, 0.5).name('scene extent (m)');
+fS.add(P, 'background', Object.keys(THEMES)).name('background');
 fS.close();
 
 // Mouse wheel on sliders: lil-gui scales the change by the raw wheel delta, which on many systems is
