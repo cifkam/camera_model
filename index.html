@@ -143,6 +143,7 @@ const P = {
   showDof: true, showDofPlanes: false,
   imageCircle: 220,        // lens image circle at infinity, mm (coverage / vignetting check)
   showCoverage: true,
+  showCoverageCone: false,   // the lens's coverage cone in object space and its section with the plane of sharp focus
   showFov: true, showSharpArea: true, showFullPlane: false,
   showPlanes: true, showLines: false, showBellows: true, showGround: true,
   showUnderground: true,   // draw the faint parts below the ground (only matters while the ground is shown)
@@ -716,6 +717,35 @@ function update() {
   for (const pl of [...frustum, focalPlane]) sharpPoly = clipPolygonToHalfSpace(sharpPoly, pl);
   if (P.showSharpArea && sharpPoly.length >= 3) drawFramedPolys(dyn, [sharpPoly], posfColor, 0.6, 0xffffff, posfBox);
 
+  // --- lens coverage cone in object space ---------------------------------------
+  // Everything inside the cone of half-angle atan(IC / 2f) about the lens axis can be
+  // projected onto the film; its section with the plane of sharp focus is the area that
+  // could be imaged sharply with the current image circle (an ellipse, or an open curve
+  // when the plane cuts through the cone's side).
+  if (P.showCoverageCone) {
+    const M = 64, covColor = nVig ? COL.vignette : 0x9a9a9a, ends = [], onPlane = [];
+    const inBox = p => ['x', 'y', 'z'].every(c => p[c] >= SB.min[c] - 1e-6 && p[c] <= SB.max[c] + 1e-6);
+    for (let i = 0; i < M; i++) {
+      const phi = i / M * 2 * Math.PI;
+      const dir = nl.clone().multiplyScalar(Math.cos(covAngle))
+        .addScaledVector(B.u, Math.sin(covAngle) * Math.cos(phi)).addScaledVector(B.v, Math.sin(covAngle) * Math.sin(phi));
+      ends.push(Cl.clone().addScaledVector(dir, rayExitT(Cl, dir, SB.min, SB.max)));
+      const den = posf ? posf.n.dot(dir) : 0, t = Math.abs(den) < 1e-9 ? -1 : -sdf(posf, Cl) / den;
+      const pt = t > 0 ? Cl.clone().addScaledVector(dir, t) : null;
+      onPlane.push(pt && inBox(pt) ? pt : null);
+    }
+    drawFramedPolys(dyn, ends.map((e, i) => [Cl.clone(), e, ends[(i + 1) % M]]), covColor, 0.05, null, SB);
+    for (let i = 0; i < M; i += 8) drawLineSeg(dyn, [Cl, ends[i]], covColor, 0.0015, 0.35);
+    if (onPlane.every(Boolean)) {
+      drawFramedPolys(dyn, [onPlane], covColor, 0.18, covColor, SB);
+    } else {
+      const segs = [];
+      for (let i = 0; i < M; i++) { const a = onPlane[i], b = onPlane[(i + 1) % M]; if (a && b) segs.push(a, b); }
+      if (segs.length) dyn.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs),
+        new THREE.LineBasicMaterial({ color: covColor, transparent: true, opacity: 0.9 })));
+    }
+  }
+
   // --- depth of field volume inside the frame ---------------------------------
   // Acceptably sharp <=> |1 - s0| <= k. In image space that is the slab between the
   // film plane scaled by 1/(1-k) and by 1/(1+k) about the lens centre; its object-
@@ -884,6 +914,7 @@ fV.add(P, 'showDof').name('in-focus volume in frame');
 fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
 fV.add(P, 'showFov').name('field of view rays');
 fV.add(P, 'showCoverage').name('lens coverage on film');
+fV.add(P, 'showCoverageCone').name('lens coverage cone');
 fV.add(P, 'showPlanes').name('extended film & lens planes');
 const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
 fV.add(P, 'showBellows').name('bellows');
