@@ -811,11 +811,13 @@ function update() {
   const J = hinge ? Cl.clone().sub(hinge.p).cross(hinge.dir).length() : Infinity;
   const mag = Number.isFinite(dObj) && dObj > 0 ? s / dObj : 0;
 
-  let txt = `<b>Lens</b> f = ${P.focal} mm · on-axis film distance ${fmt(s / MM, 1)} mm · lens/film angle ${fmt(lensFilmAngle, 1)}°\n`;
+  const viewCam = P.camera === 'view camera';   // angles and the Scheimpflug/hinge lines only matter with movements
+  let txt = `<b>Lens</b> f = ${P.focal} mm · on-axis film distance ${fmt(s / MM, 1)} mm` +
+    (viewCam ? ` · lens/film angle ${fmt(lensFilmAngle, 1)}°` : '') + `\n`;
   if (!posf) txt += `${sw(COL.posf)}Plane of sharp focus: <b>at infinity</b>\n`;
   else if (virtual) txt += `<span class="warn">${sw(COL.posfVirtual)}Image distance ≤ f: focused "beyond infinity" (only the real part in front of the lens is drawn)</span>\n`;
-  else txt += `${sw(COL.posf)}<b>Plane of sharp focus</b>: on-axis distance ${fmt(dObj)} m (m = 1:${fmt(1 / mag, 0)}), ` +
-              `${fmt(posfAngle, 1)}° from film plane\n`;
+  else txt += `${sw(COL.posf)}<b>Plane of sharp focus</b>: on-axis distance ${fmt(dObj)} m (m = 1:${fmt(1 / mag, 0)})` +
+              (viewCam ? `, ${fmt(posfAngle, 1)}° from film plane` : '') + `\n`;
   if (sharpQuad) {
     const L = (i, j) => sharpQuad[i].distanceTo(sharpQuad[j]);
     const w = [L(0, 1), L(3, 2)], hh = [L(0, 3), L(1, 2)];
@@ -837,10 +839,12 @@ function update() {
     : `   nothing acceptably sharp along the lens axis\n`;
   if (dofInfo.missing) txt += `   ${dofInfo.missing} frame corner${dofInfo.missing > 1 ? 's' : ''} look past the DoF wedge: nothing sharp there at any distance\n`;
   if (dofInfo.farInfinite) txt += `   far limit at ∞ for part of the frame; volume cut at the scene extent\n`;
-  txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane\n`;
-  txt += `${sw(COL.scheimpflug)}Scheimpflug line (film ∩ lens): ${schLine || lensFilmAngle > 1e-6 ? 'present' : 'at infinity (planes parallel)'}\n`;
-  txt += `${sw(COL.hinge)}Hinge line: distance from lens J = ${Number.isFinite(J) ? fmt(J) + ' m' : '∞'}` +
-         (lensFilmAngle > 1e-6 ? `  (f / sin α = ${fmt(f / Math.sin(THREE.MathUtils.degToRad(lensFilmAngle)))} m)` : '');
+  txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane`;
+  if (viewCam) {
+    txt += `\n${sw(COL.scheimpflug)}Scheimpflug line (film ∩ lens): ${schLine || lensFilmAngle > 1e-6 ? 'present' : 'at infinity (planes parallel)'}\n`;
+    txt += `${sw(COL.hinge)}Hinge line: distance from lens J = ${Number.isFinite(J) ? fmt(J) + ' m' : '∞'}` +
+           (lensFilmAngle > 1e-6 ? `  (f / sin α = ${fmt(f / Math.sin(THREE.MathUtils.degToRad(lensFilmAngle)))} m)` : '');
+  }
   document.getElementById('infoBody').innerHTML = txt;
 }
 // legend collapses to its title bar and back, like the control panel
