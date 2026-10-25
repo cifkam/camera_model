@@ -692,7 +692,6 @@ function update() {
   const bigBox = SB;
   // framed things (sharp area, in-focus volume) stop at the ground while it is drawn, otherwise they use the whole box
   const posfBox = SB;   // framed things are split at the ground when drawn (see drawFramedPolys)
-  const camBox = { min: new THREE.Vector3(-0.45, -E, -ext - 0.6), max: new THREE.Vector3(0.45, h + E, 0.6) };
 
   const posfColor = virtual ? COL.posfVirtual : COL.posf;
   // Extended planes reach below ground. The plane of sharp focus is drawn back to the lens
@@ -833,8 +832,14 @@ function update() {
   const axisIv = focusInterval(B, filmL, f, k, nl);
   const dofInfo = { farInfinite: ivs.some(iv => iv && !Number.isFinite(iv.tFar)), missing: ivs.filter(iv => !iv).length };
   if (P.showPlanes) {
-    for (const [pl, c] of [[filmPlane, COL.film], [lensPlane, COL.lens]])
-      drawPlanePoly(dyn, clipPlaneToBox(pl, camBox.min, camBox.max), c, 0.12);
+    // a rectangle in each standard's own plane, centred on it, with the format's aspect ratio and
+    // 5× the frame width (≈ 1 m for 4x5), so the two patches are identical whatever the pitch
+    const pw = 5 * fw, ph = pw * ih / iw;
+    for (const [pose, c] of [[rear, COL.film], [front, COL.lens]]) {
+      const poly = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) =>
+        new THREE.Vector3(sx * pw / 2, sy * ph / 2, 0).applyQuaternion(pose.quaternion).add(pose.position));
+      drawPlanePoly(dyn, poly, c, 0.12);
+    }
   }
 
   // lens axis and on-axis focus point
