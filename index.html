@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>View Camera Focus</title>
+<title>Camera model</title>
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #1c1e22; font-family: system-ui, sans-serif; }
@@ -125,6 +125,7 @@ const P = {
   focal: 150,          // lens focal length, mm
   extension: separationFor(150, DEFAULT_FOCUS),   // rail distance between standard centres, mm ("focusing")
   focusDist: DEFAULT_FOCUS * MM,                  // on-axis focus distance from the lens, m (linked to extension)
+  camera: 'normal camera',   // 'normal camera' (no movements) or 'view camera' (standards with movements)
   format: '4x5"',
   autoLens: true,      // on format change: focal length = format diagonal, image circle = typical for the format
   refocusOnFocal: true,   // on focal length change: keep the focus distance (separation follows the lens)
@@ -803,7 +804,8 @@ document.getElementById('infoTitle').addEventListener('click', () => infoEl.clas
 // ----------------------------------------------------------------------------
 // GUI
 // ----------------------------------------------------------------------------
-const gui = new GUI({ title: 'View camera', width: 310 });
+const gui = new GUI({ title: 'Settings', width: 310 });
+const cameraCtrl = gui.add(P, 'camera', ['normal camera', 'view camera']).name('camera');
 const fL = gui.addFolder('Lens & focus');
 const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
 fL.add(P, 'autoLens').name('set lens when changing format');
@@ -852,10 +854,19 @@ new MappedNumberController(fR, P, 'rearTilt', -30, 30, 0.25, ANGLE_MAP).name('ti
 new MappedNumberController(fR, P, 'rearSwing', -30, 30, 0.25, ANGLE_MAP).name('swing ° (+ to left)');
 shiftCtrls.push(fR.add(P, 'rearRise', -R0.shift, R0.shift, 1).name('rise / fall (mm)'),
                 fR.add(P, 'rearShift', -R0.shift, R0.shift, 1).name('shift (mm)'));
-gui.add(P, 'tiltPivot', ['axis', 'base']).name('tilt pivot');
+const pivotCtrl = gui.add(P, 'tiltPivot', ['axis', 'base']).name('tilt pivot');
 const ZERO = { frontTilt: 0, frontSwing: 0, frontRise: 0, frontShift: 0, rearTilt: 0, rearSwing: 0, rearRise: 0, rearShift: 0 };
-gui.add({ reset: () => { Object.assign(P, ZERO); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'reset')
+const resetCtrl = gui.add({ reset: () => { Object.assign(P, ZERO); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'reset')
   .name('Reset movements');
+// normal camera: no movements at all; the standards' folders, the pivot and the reset button are hidden
+function applyCameraMode() {
+  const view = P.camera === 'view camera';
+  // image circle and the Scheimpflug/hinge lines only matter with movements
+  for (const x of [fF, fR, pivotCtrl, resetCtrl, icCtrl, linesCtrl]) view ? x.show() : x.hide();
+  if (!view) Object.assign(P, ZERO);
+}
+cameraCtrl.onChange(() => { applyCameraMode(); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); });
+// (applied once all controllers exist, after the Display folder below)
 
 const fD = gui.addFolder('Depth of field');
 fD.add(P, 'fnumber', [1, 1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90]).name('f-number');
@@ -874,11 +885,12 @@ fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
 fV.add(P, 'showFov').name('field of view rays');
 fV.add(P, 'showCoverage').name('lens coverage on film');
 fV.add(P, 'showPlanes').name('extended film & lens planes');
-fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
+const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
 fV.add(P, 'showBellows').name('bellows');
 fV.add(P, 'showGround').name('ground');
 fV.add(P, 'showUnderground').name('parts below the ground');
 fV.close();
+applyCameraMode();
 
 const fS = gui.addFolder('Scene');
 fS.add(P, 'cameraHeight', 0.1, 2.5, 0.05).name('lens height (m)');

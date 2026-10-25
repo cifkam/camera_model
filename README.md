@@ -1,6 +1,7 @@
-# View camera focus visualiser
+# Camera model
 
-Interactive 3D view of a large-format camera (rear standard = film, front standard = lens)
+Interactive 3D view of a camera (rear standard = film, front standard = lens); in "view camera"
+mode the standards have movements, in "normal camera" mode they are fixed and their controls hidden
 and the plane of sharp focus that results from focusing, tilt, swing, rise/fall and shift.
 
 ## Run
