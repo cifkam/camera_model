@@ -127,6 +127,7 @@ const P = {
   extension: separationFor(150, DEFAULT_FOCUS),   // rail distance between standard centres, mm ("focusing")
   focusDist: DEFAULT_FOCUS * MM,                  // on-axis focus distance from the lens, m (linked to extension)
   camera: 'normal camera',   // 'normal camera' (no movements) or 'view camera' (standards with movements)
+  cameraPitch: 0,            // whole camera pitched about the tripod top, degrees (+ up); view camera only
   format: '4x5"',
   autoLens: true,      // on format change: focal length = format diagonal, image circle = typical for the format
   refocusOnFocal: true,   // on focal length change: keep the focus distance (separation follows the lens)
@@ -146,6 +147,7 @@ const P = {
   imageCircle: 220,        // lens image circle at infinity, mm (coverage / vignetting check)
   showCoverage: true,
   showCoverageCone: false,   // the lens's coverage cone in object space and its section with the plane of sharp focus
+  showParallel: false,       // planes parallel to the film, each drawn as the rectangle that projects onto the film gate
   showFov: true, showSharpArea: true, showFullPlane: false,
   showPlanes: true, showLines: false, showBellows: true, showGround: true,
   showUnderground: true,   // draw the faint parts below the ground (only matters while the ground is shown)
@@ -163,6 +165,7 @@ const THEMES = {
 const COL = {
   posf: 0x4fe07a, posfVirtual: 0xff8a3d, film: 0xffffff, lens: 0x4fa8ff,
   scheimpflug: 0xff4fd8, hinge: 0xffd84f, axis: 0x9ad8ff, fov: 0xc9a0ff, dof: 0x3ee6ff, vignette: 0xff5252,
+  parallel: 0xd8c08a,
 };
 
 // Circle of confusion on film (mm): tolerable blur on the print, divided by the enlargement.
@@ -570,32 +573,46 @@ function update() {
   const railY = h - fh / 2 - 0.06;
 
   // --- standards --------------------------------------------------------------
-  // the lens stays fixed in space (z = 0); focusing slides the rear standard along the rail
+  // Camera-local poses: the lens sits at z = 0 and focusing slides the rear standard along the
+  // rail. The whole camera (standards, rail, bellows) then pitches about the tripod top by
+  // P.cameraPitch; the tripod itself stays put. World poses (rear, front) feed the optics.
   const rearNom = new THREE.Vector3(0, h, -ext), frontNom = new THREE.Vector3(0, h, 0);
-  const rear = standardPose(rearNom, P.rearTilt, P.rearSwing, P.rearRise * MM, P.rearShift * MM, fh / 2);
-  const front = standardPose(frontNom, P.frontTilt, P.frontSwing, P.frontRise * MM, P.frontShift * MM, fh / 2);
-  dyn.add(buildStandard(rear, iw, ih, bar, depth, 'rear'));
-  dyn.add(buildStandard(front, iw, ih, bar, depth, 'front'));
+  const rearL = standardPose(rearNom, P.rearTilt, P.rearSwing, P.rearRise * MM, P.rearShift * MM, fh / 2);
+  const frontL = standardPose(frontNom, P.frontTilt, P.frontSwing, P.frontRise * MM, P.frontShift * MM, fh / 2);
+  // fixed monorail: ends at the front standard, long enough for the rear one at maximum separation
+  const railLen = formatRanges().extension[1] * MM + 0.08, RAIL_Z = 0.04 - railLen / 2;   // tripod under the rail's middle
+  // pitch about the centre of projection (the lens centre), so framing geometry stays anchored;
+  // the tripod then follows the rail's mounting point
+  const pivot = frontL.position.clone();
+  const railTopL = new THREE.Vector3(0, railY - 0.02, RAIL_Z);                              // tripod mount on the rail (unpitched)
+  const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), THREE.MathUtils.degToRad(-P.cameraPitch));
+  const pitched = pose => ({
+    position: pivot.clone().add(pose.position.clone().sub(pivot).applyQuaternion(qPitch)),
+    quaternion: qPitch.clone().multiply(pose.quaternion),
+  });
+  const rear = pitched(rearL), front = pitched(frontL);
+  const cam = new THREE.Group(); cam.position.copy(pivot); cam.quaternion.copy(qPitch); dyn.add(cam);
+  const camLocal = new THREE.Group(); camLocal.position.copy(pivot).negate(); cam.add(camLocal);   // built in unpitched coords
+  camLocal.add(buildStandard(rearL, iw, ih, bar, depth, 'rear'));
+  camLocal.add(buildStandard(frontL, iw, ih, bar, depth, 'front'));
 
   // --- rail, posts, tripod ----------------------------------------------------
   const railM = mat(0x2b2d33), postM = mat(0x44474f);
-  // fixed monorail: ends at the front standard, long enough for the rear one at maximum separation
-  const railLen = formatRanges().extension[1] * MM + 0.08, RAIL_Z = 0.04 - railLen / 2;   // tripod under the rail's middle
-  const rail = box(0.04, 0.03, railLen, railM); rail.position.set(0, railY, RAIL_Z); dyn.add(rail);
-  for (const [nom, pose] of [[rearNom, rear], [frontNom, front]]) {
+  const rail = box(0.04, 0.03, railLen, railM); rail.position.set(0, railY, RAIL_Z); camLocal.add(rail);
+  for (const [nom, pose] of [[rearNom, rearL], [frontNom, frontL]]) {
     const top = new THREE.Vector3(pose.position.x, pose.position.y - fh / 2, nom.z);
     const bottom = new THREE.Vector3(pose.position.x, railY + 0.015, nom.z);
-    dyn.add(tube(bottom, top, 0.012, postM));
+    camLocal.add(tube(bottom, top, 0.012, postM));
     // crossbar: spans from the rail to the (shifted) post, so it always rests on the rail
     const sx = pose.position.x;
-    const foot = box(Math.abs(sx) + 0.07, 0.02, 0.05, postM); foot.position.set(sx / 2, railY + 0.025, nom.z); dyn.add(foot);
+    const foot = box(Math.abs(sx) + 0.07, 0.02, 0.05, postM); foot.position.set(sx / 2, railY + 0.025, nom.z); camLocal.add(foot);
   }
-  const colTop = new THREE.Vector3(0, railY - 0.02, RAIL_Z);
-  dyn.add(tube(new THREE.Vector3(0, railY - 0.25, RAIL_Z), colTop, 0.015, postM));
+  const colTop = pivot.clone().add(railTopL.clone().sub(pivot).applyQuaternion(qPitch));    // follows the pitched rail
+  dyn.add(tube(colTop.clone().add(new THREE.Vector3(0, -0.23, 0)), colTop, 0.015, postM));
   for (let k = 0; k < 3; k++) {
     const a = k * 2 * Math.PI / 3 + Math.PI / 6;
     dyn.add(tube(colTop.clone().add(new THREE.Vector3(0, -0.2, 0)),
-      new THREE.Vector3(0.55 * Math.cos(a), 0, RAIL_Z + 0.55 * Math.sin(a)), 0.009, postM));
+      new THREE.Vector3(colTop.x + 0.55 * Math.cos(a), 0, colTop.z + 0.55 * Math.sin(a)), 0.009, postM));
   }
 
   // --- bellows ----------------------------------------------------------------
@@ -603,7 +620,7 @@ function update() {
     const inW = fw - 2 * bar, inH = fh - 2 * bar;
     const corner = (pose, sx, sy) => new THREE.Vector3(sx * inW / 2, sy * inH / 2, 0).applyQuaternion(pose.quaternion).add(pose.position);
     const S = [[-1,-1],[1,-1],[1,1],[-1,1]];
-    const r = S.map(([x, y]) => corner(rear, x, y)), fr = S.map(([x, y]) => corner(front, x, y));
+    const r = S.map(([x, y]) => corner(rearL, x, y)), fr = S.map(([x, y]) => corner(frontL, x, y));
     const pos = [];
     for (let i = 0; i < 4; i++) {
       const j = (i + 1) % 4;
@@ -612,7 +629,7 @@ function update() {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.computeVertexNormals();
-    dyn.add(new THREE.Mesh(g, mat(0x7a1f1f, { opacity: 0.55 })));
+    camLocal.add(new THREE.Mesh(g, mat(0x7a1f1f, { opacity: 0.55 })));
   }
 
   // --- ground -----------------------------------------------------------------
@@ -747,6 +764,28 @@ function update() {
   for (const pl of [...frustum, focalPlane]) sharpPoly = clipPolygonToHalfSpace(sharpPoly, pl);
   if (P.showSharpArea && sharpPoly.length >= 3) drawFramedPolys(dyn, [sharpPoly], posfColor, 0.6, 0xffffff, posfBox);
 
+  // --- planes parallel to the film ----------------------------------------------
+  // A plane parallel to the film is imaged without keystoning: the film gate projected
+  // through the lens centre onto it is a similar rectangle. Rear tilt and swing choose
+  // which planes those are ("rectification"); front movements do not affect them.
+  const parallelSpacing = [0.5, 1, 2, 5, 10].find(sp => E / sp <= 12) || 10;   // m between planes
+  const showParallel = P.showParallel && P.camera === 'view camera';
+  if (showParallel) {
+    const boxPlanes = [];
+    for (const k of ['x', 'y', 'z']) {
+      const lo = new THREE.Vector3(), hi = new THREE.Vector3(); lo[k] = 1; hi[k] = -1;
+      boxPlanes.push({ n: lo, d: -SB.min[k] }, { n: hi, d: SB.max[k] });
+    }
+    const fwd = nr.dot(nl) >= 0 ? nr.clone() : nr.clone().negate();   // film normal towards the subject
+    for (let d = parallelSpacing; d <= E + 1e-9; d += parallelSpacing) {
+      const corners = rayDirs.map(dir => { const c = dir.dot(fwd); return c > 1e-6 ? Cl.clone().addScaledVector(dir, d / c) : null; });
+      if (!corners.every(Boolean)) continue;
+      let poly = corners;
+      for (const pl of boxPlanes) poly = clipPolygonToHalfSpace(poly, pl);
+      if (poly.length >= 3) drawFramedPolys(dyn, [poly], COL.parallel, 0.06, COL.parallel, SB);
+    }
+  }
+
   // --- lens coverage cone in object space ---------------------------------------
   // Everything inside the cone of half-angle atan(IC / 2f) about the lens axis can be
   // projected onto the film; its section with the plane of sharp focus is the area that
@@ -854,6 +893,8 @@ function update() {
     : `   nothing acceptably sharp along the lens axis\n`;
   if (dofInfo.missing) txt += `   ${dofInfo.missing} frame corner${dofInfo.missing > 1 ? 's' : ''} look past the DoF wedge: nothing sharp there at any distance\n`;
   if (dofInfo.farInfinite) txt += `   far limit at ∞ for part of the frame; volume cut at the scene extent\n`;
+  if (showParallel)
+    txt += `${sw(COL.parallel)}Planes parallel to the film every ${parallelSpacing} m: anything lying in them is imaged as a similar rectangle (no keystoning)\n`;
   txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane`;
   if (viewCam) {
     txt += `\n${sw(COL.scheimpflug)}Scheimpflug line (film ∩ lens): ${schLine || lensFilmAngle > 1e-6 ? 'present' : 'at infinity (planes parallel)'}\n`;
@@ -870,6 +911,7 @@ document.getElementById('infoTitle').addEventListener('click', () => infoEl.clas
 // ----------------------------------------------------------------------------
 const gui = new GUI({ title: 'Settings', width: 310 });
 const cameraCtrl = gui.add(P, 'camera', ['normal camera', 'view camera']).name('camera');
+const pitchCtrl = new MappedNumberController(gui, P, 'cameraPitch', -45, 45, 0.25, ANGLE_MAP).name('camera pitch ° (+ up)');
 const fL = gui.addFolder('Lens & focus');
 const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
 fL.add(P, 'autoLens').name('set lens when changing format');
@@ -925,9 +967,9 @@ const resetCtrl = gui.add({ reset: () => { Object.assign(P, ZERO); gui.controlle
 // normal camera: no movements at all; the standards' folders, the pivot and the reset button are hidden
 function applyCameraMode() {
   const view = P.camera === 'view camera';
-  // image circle and the Scheimpflug/hinge lines only matter with movements
-  for (const x of [fF, fR, pivotCtrl, resetCtrl, icCtrl, linesCtrl]) view ? x.show() : x.hide();
-  if (!view) Object.assign(P, ZERO);
+  // camera pitch, image circle, Scheimpflug/hinge lines and film-parallel planes only matter with movements
+  for (const x of [fF, fR, pivotCtrl, resetCtrl, icCtrl, linesCtrl, parallelCtrl, pitchCtrl]) view ? x.show() : x.hide();
+  if (!view) { Object.assign(P, ZERO); P.cameraPitch = 0; }
 }
 cameraCtrl.onChange(() => { applyCameraMode(); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); });
 // (applied once all controllers exist, after the Display folder below)
@@ -949,6 +991,7 @@ fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
 fV.add(P, 'showFov').name('field of view rays');
 fV.add(P, 'showCoverage').name('lens coverage on film');
 fV.add(P, 'showCoverageCone').name('lens coverage cone');
+const parallelCtrl = fV.add(P, 'showParallel').name('planes parallel to film (no keystone)');
 fV.add(P, 'showPlanes').name('extended film & lens planes');
 const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
 fV.add(P, 'showBellows').name('bellows');
