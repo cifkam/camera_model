@@ -26,7 +26,7 @@ jobs:
           cp index.html site/
           cp 3D/index.html site/3D/
           cp 2D/index.html site/2D/
-          mkdir -p site/tools && cp tools/index.html tools/optics.js site/tools/
+          mkdir -p site/calculators && cp calculators/index.html calculators/optics.js site/calculators/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

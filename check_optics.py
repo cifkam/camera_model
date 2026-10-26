@@ -1,4 +1,4 @@
-"""Independent numeric cross-check of the optics used in 3D/index.html (and tools/optics.js).
+"""Independent numeric cross-check of the optics used in 3D/index.html (and calculators/optics.js).
 
 The page computes the plane of sharp focus (PoSF) by pushing the film plane
 through the thin-lens projective map  (x, y, z, 1) -> (f x, f y, f z, z + f)

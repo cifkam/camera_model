@@ -1,6 +1,6 @@
 # Photo tools
 
-Calculators and tables for photographers, as a single static page: `tools/index.html`. No build
+Calculators and tables for photographers, as a single static page: `calculators/index.html`. No build
 step; open the file in a browser or publish it with the rest of the repository.
 
 ## Layout
@@ -14,7 +14,7 @@ step; open the file in a browser or publish it with the rest of the repository.
 - `optics.js` — the formulas (thin-lens model, depth of field, hyperfocal distance, circle of
   confusion from the print, bellows factor, angle of view, focus spread, Scheimpflug tilt).
   A classic script so the page also works from `file://`; Node can `require` it.
-- `test_optics.js` — `node tools/test_optics.js` checks the formulas against textbook values.
+- `test_optics.js` — `node calculators/test_optics.js` checks the formulas against textbook values.
 
 ## Tools so far
 

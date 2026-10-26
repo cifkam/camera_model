@@ -1,4 +1,4 @@
-// Checks for optics.js against textbook values. Run: node tools/test_optics.js
+// Checks for optics.js against textbook values. Run: node calculators/test_optics.js
 const O = require('./optics.js');
 let fails = 0;
 const check = (name, got, expected, tol = 1e-9) => {
