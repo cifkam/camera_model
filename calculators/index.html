@@ -14,10 +14,12 @@
   nav { display: flex; gap: 6px; flex-wrap: wrap; }
   nav button { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
   nav button.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  button.action { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; width: 100%; margin: 6px 0 2px; }
+  button.action:hover { border-color: var(--accent); }
   main { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 16px; padding: 16px; align-items: start; }
   /* the settings column stays on screen while the tool scrolls; if it is taller than the window it scrolls by itself */
   aside { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
-  @media (max-width: 820px) { main { grid-template-columns: 1fr; padding: 12px; } aside { position: static; max-height: none; overflow: visible; } }
+  @media (max-width: 820px) { main { grid-template-columns: minmax(0, 1fr); padding: 12px; }   /* minmax(0, …): a wide table must not widen the page */ aside { position: static; max-height: none; overflow: visible; } }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
   .card h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
   .card h3 { font-size: 14px; margin: 14px 0 8px; color: var(--text); }
@@ -29,8 +31,10 @@
   .field input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0 0 2px; }
   .unit { color: var(--muted); min-width: 26px; }
   .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  .warn { color: #ffb347; }   /* e.g. a lens whose image circle is smaller than the frame */
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; table-layout: fixed; }   /* fixed: equal columns, widths do not follow the content */
-  table.hf { min-width: 680px; } table.dof { min-width: 1070px; font-size: 13px; }
+  table.hf { min-width: 680px; } table.dof { min-width: 1070px; font-size: 13px; } table.fmts { min-width: 880px; font-size: 13px; }
+  table.fmts th:first-child { width: 110px; } table.fmts th:last-child { width: 170px; }
   th:first-child { width: 128px; }
   th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid #474b53; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   th:first-child, td:first-child { text-align: left; color: var(--muted); }
@@ -38,8 +42,12 @@
   .hl { background: rgba(79, 168, 255, .16); }
   .hl2 { background: rgba(79, 168, 255, .45); color: #fff; }   /* current row ∩ current column; no bold, it would widen the column */
   .tablewrap { overflow-x: auto; }
-  .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
-  .stat { background: var(--panel2); border-radius: 6px; padding: 8px 10px; }
+  .results { display: flex; flex-wrap: wrap; gap: 8px; }   /* tiles size to their content, they do not fill the row */
+  .results.two { display: grid; grid-template-columns: max-content repeat(2, max-content); align-items: center; margin-top: 12px; }
+  .results .rowlabel { color: var(--muted); font-size: 13px; text-align: right; padding-right: 6px; }
+  .results .rowlabel b { color: var(--text); font-weight: 600; display: block; }
+  @media (max-width: 560px) { .results.two { grid-template-columns: 1fr; } .results .rowlabel { text-align: left; margin-top: 6px; } }
+  .stat { background: var(--panel2); border-radius: 6px; padding: 8px 12px; min-width: 120px; }
   .stat .k { color: var(--muted); font-size: 12px; }
   .stat .v { font-size: 18px; font-variant-numeric: tabular-nums; }
   .stat .v.pair { font-size: 16px; }
@@ -73,6 +81,7 @@ const S = {
   cocMode: 'print', printLong: 40, viewDist: 50, eyeRes: 1500, coc: 0.1,
   focus: 3,           // m, used by the DoF tools
   chartMin: 0.3, chartMax: 100,   // m, distance axes of the DoF charts
+  targetFormat: 'APS-C', eqRef: 'diagonal', sceneDist: 3,   // formats tool: the format compared with, the dimension compared, subject distance (m)
   tool: 'dof',
 };
 try { Object.assign(S, JSON.parse(localStorage.getItem('phototools') || '{}')); } catch (e) { /* storage unavailable: keep defaults */ }
@@ -152,7 +161,7 @@ function checkField({ label, key, onChange = update }) {
 function renderShared() {
   const root = document.getElementById('shared');
   root.replaceChildren();
-  const cam = h('div', { class: 'card' }, h('h2', {}, 'Camera'));
+  const cam = h('div', { class: 'card' }, h('h2', {}, (tools[S.tool] && tools[S.tool].cameraTitle) || 'Camera'));   // a tool may name it, e.g. 'Source camera'
   cam.append(selectField({ label: 'format', key: 'format', options: Object.keys(O.FORMATS), onChange: () => {
     if (S.autoLens) { S.focal = Math.round(O.diagonal(S.format)); fields.focal.set(S.focal); }
     update();
@@ -162,7 +171,7 @@ function renderShared() {
   cam.append(selectField({ label: 'f-number', key: 'fnumber', options: O.APERTURES }));
   root.append(cam);
 
-  const coc = h('div', { class: 'card' }, h('h2', {}, 'Circle of confusion'));
+  const coc = h('div', { class: 'card', id: 'cocCard', style: tools[S.tool] && tools[S.tool].noCoc ? 'display: none' : '' }, h('h2', {}, 'Circle of confusion'));   // hidden for tools that do not use it
   coc.append(selectField({ label: 'circle of confusion', key: 'cocMode', options: ['print', 'manual'], onChange: () => { renderShared(); update(); } }));
   if (S.cocMode === 'print') {
     coc.append(numField({ label: 'print long edge', key: 'printLong', min: 10, max: 200, step: 1, unit: 'cm' }));
@@ -173,6 +182,7 @@ function renderShared() {
   }
   coc.append(h('p', { class: 'note', id: 'cocNote' }));
   root.append(coc);
+  if (tools[S.tool] && tools[S.tool].renderPanel) tools[S.tool].renderPanel(root);   // the tool's own inputs, below the shared ones
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +409,139 @@ tools.table = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: formats, crop factors and equivalent lenses
+// ---------------------------------------------------------------------------
+const REFS = ['diagonal', 'width', 'height'];
+const fmtDeg = r => (r * 180 / Math.PI).toFixed(1) + '°';
+// aspect ratio as small integers (wide:tall), '≈' when it is only close; decimal when no small ratio fits
+function niceAspect(w, h) {
+  const r = w / h;
+  let best = null;   // the smallest denominator that fits wins (7:5 rather than 10:7 for 5x7")
+  for (let q = 1; q <= 9 && !best; q++) for (let p = q; p <= 2 * q; p++) {
+    if (p !== q && gcd(p, q) !== 1) continue;
+    const err = Math.abs(p / q / r - 1);
+    if (err < 0.015 && (!best || err < best.err - 1e-9)) best = { p, q, err };
+  }
+  if (!best) return r.toFixed(2) + ':1';
+  return (best.err > 0.003 ? '≈\u00a0' : '') + best.p + ':' + best.q;
+}
+const gcd = (a, b) => b ? gcd(b, a % b) : a;
+tools.formats = {
+  title: 'Formats',
+  noCoc: true,   // nothing here depends on the circle of confusion: its card is hidden
+  cameraTitle: 'Source camera',
+  renderPanel(root) {   // in the side panel, below the camera: what to compare with, and the subject distance
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Target camera'),
+      selectField({ label: 'format', key: 'targetFormat', options: Object.keys(O.FORMATS) }),
+      selectField({ label: 'compare by', key: 'eqRef', options: REFS }),
+      numField({ label: 'subject distance', key: 'sceneDist', min: 0.2, max: 1000, step: 0.01, unit: 'm', log: true, decimals: 2 }),
+      h('button', { class: 'action', onclick: () => {
+        // the target format becomes the source; with "set lens when changing format" the lens becomes
+        // the equivalent one, so the view stays the same, otherwise the focal length is kept
+        const fEq = O.equivalentFocal(S.focal, S.format, S.targetFormat, S.eqRef);
+        [S.format, S.targetFormat] = [S.targetFormat, S.format];
+        if (S.autoLens) S.focal = Math.max(4, Math.min(800, Math.round(fEq)));
+        renderShared(); update();
+      } }, 'Swap formats'),
+      h('p', { class: 'note' }, 'Angles and equivalents are for a lens focused at infinity; the subject distance only sets the scene coverage. ' +
+        'Aspect ratios differ between formats, so "the same view" depends on which dimension is matched: the diagonal is the usual crop-factor convention, the width or height when one edge matters.')));
+  },
+  render(root) {
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'fmtStats' }),
+      h('p', { class: 'note', id: 'fmtNote', style: 'white-space: pre-line' }),
+      h('div', { class: 'results two', id: 'fmtCompare' }),
+      h('p', { class: 'note' }, 'The source lens on the source format, and the same lens on the target format. Angles of view horizontal / vertical / diagonal at infinity, scene covered at the subject distance.'),
+      h('p', { class: 'note warn', id: 'fmtVignette' })));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'All formats'), h('div', { class: 'tablewrap', id: 'fmtTable' }),
+      h('p', { class: 'note' }, 'Crop factor of each format relative to the source format (set the source to 35 mm for the usual crop factors), the focal length and aperture that give the source lens’s view and depth of field on each format, ' +
+        'and the angles of view (horizontal / vertical / diagonal) the source focal length itself would give there; in orange where that frame is larger than the image circle a lens made for the source format typically has, so the lens would vignette. The source format is highlighted, the target format stronger.')));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Formats to scale'), h('div', { id: 'fmtDrawing' }),
+      h('p', { class: 'note', id: 'fmtDrawingNote' })));
+  },
+  update() {
+    const src = S.format, dst = S.targetFormat, ref = S.eqRef, f = S.focal, N = S.fnumber;
+    const crop = O.cropFactor(dst, ref, src), fEq = O.equivalentFocal(f, src, dst, ref), nEq = O.equivalentAperture(N, src, dst, ref);   // crop factor of the compared format relative to the source
+    const stat = (k, v) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v));
+    const fmtN = n => n < 10 ? n.toFixed(1) : n.toFixed(0);
+    document.getElementById('fmtStats').replaceChildren(
+      stat(`crop factor ${dst} vs ${src}`, crop.toFixed(2) + '×'),
+      stat(`equivalent lens on ${dst}`, fmtN(fEq) + ' mm'),
+      stat(`equivalent aperture on ${dst}`, 'f/' + fmtN(nEq)));
+    // the source lens on either format: one row of tiles per format
+    const dist = S.sceneDist * 1000, tiles = [];
+    for (const [role, fmt] of [['source', src], ['target', dst]]) {
+      const a = O.anglesOfView(fmt, f), c = O.sceneCoverage(fmt, f, dist);
+      tiles.push(h('div', { class: 'rowlabel' }, h('b', {}, role), `${f} mm on ${fmt}`),
+                 stat('angle of view (H / V / D)', `${fmtDeg(a.h)} / ${fmtDeg(a.v)} / ${fmtDeg(a.d)}`),
+                 stat(`scene at ${fmtDist(S.sceneDist)}`, `${fmtDist(c.width / 1000)} × ${fmtDist(c.height / 1000)}`));
+    }
+    document.getElementById('fmtCompare').replaceChildren(...tiles);
+    // a lens made for a format covers an image circle about as large as that format; on a larger
+    // frame the corners fall outside it (vignetting), unless the lens happens to have more coverage
+    const circle = O.IMAGE_CIRCLE[src], covers = fmt => O.diagonal(fmt) <= circle;
+    document.getElementById('fmtVignette').textContent = covers(dst) ? '' :
+      `Caution: a lens made for ${src} typically covers an image circle of about ${circle} mm, but the ${dst} frame has a ${O.diagonal(dst).toFixed(0)} mm diagonal. ` +
+      `The same lens would vignette there (dark or soft corners), unless it is a design with more coverage than its format needs; the angles above assume full coverage.`;
+    const ratio = fEq / f;
+    document.getElementById('fmtNote').textContent =
+      `${f} mm at f/${N} on ${src} gives the same framing, depth of field and background blur as ${fmtN(fEq)} mm at f/${fmtN(nEq)} on ${dst} (matched by ${ref}).\n` +
+      `The equivalent aperture keeps the entrance pupil, so at the same shutter speed ${dst} needs ` +
+      (ratio > 1 ? `${(ratio * ratio).toFixed(1)}× more light (${(2 * Math.log2(ratio)).toFixed(1)} stops): raise the ISO or lengthen the exposure.`
+                 : `${(1 / (ratio * ratio)).toFixed(1)}× less light (${(-2 * Math.log2(ratio)).toFixed(1)} stops): lower the ISO or shorten the exposure.`);
+    drawFormats(document.getElementById('fmtDrawing'), src, dst, ref);
+    document.getElementById('fmtDrawingNote').textContent =
+      `Frames centred on each other at one scale. Filled: ${src} (source). Cyan: ${dst}. Dashed: a ${dst}-shaped frame matched to the source by ${ref}; ` +
+      `the equivalent lens shows exactly this on ${dst}, so where the dashed frame and the source frame differ, the two formats cannot see the same picture.`;
+    // table
+    const rows = Object.keys(O.FORMATS).map(name => {
+      const [w, hh] = O.FORMATS[name];
+      return { name, w, h: hh, diag: O.diagonal(name), aspect: w / hh, crop: O.cropFactor(name, ref, src),
+               fEq: O.equivalentFocal(f, src, name, ref), nEq: O.equivalentAperture(N, src, name, ref), aov: O.anglesOfView(name, f) };
+    });
+    const cls = name => name === dst ? 'hl2' : name === src ? 'hl' : '';
+    const table = h('table', { class: 'fmts' },
+      h('thead', {}, h('tr', {}, ['format', 'image area (mm)', 'diagonal', 'aspect', `crop (${ref})`, 'equiv. lens', 'equiv. aperture', `${f} mm sees (H / V / D)`].map(t => h('th', {}, t)))),
+      h('tbody', {}, rows.map(r => h('tr', {}, [r.name, `${r.w} × ${r.h}`, r.diag.toFixed(1), niceAspect(r.w, r.h), r.crop.toFixed(2) + '×',
+        fmtN(r.fEq) + ' mm', 'f/' + fmtN(r.nEq), `${fmtDeg(r.aov.h)} / ${fmtDeg(r.aov.v)} / ${fmtDeg(r.aov.d)}`]
+        .map((t, i) => h('td', { class: cls(r.name) + (i === 7 && !covers(r.name) ? ' warn' : ''), title: i === 7 && !covers(r.name) ? `larger than the image circle of a lens made for ${src}: vignetting likely` : null }, t))))));
+    document.getElementById('fmtTable').replaceChildren(table);
+  },
+};
+
+function drawFormats(container, src, dst, ref) {
+  const W = chartWidth(container), names = Object.keys(O.FORMATS);
+  const maxW = Math.max(...names.map(n => O.FORMATS[n][0])), maxH = Math.max(...names.map(n => O.FORMATS[n][1]));
+  const pad = 16, k = (W - 2 * pad) / maxW, Hh = Math.round(maxH * k + 2 * pad);
+  const cx = W / 2, cy = Hh / 2;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  const rect = (w, hh, attrs) => svg.append(svgEl('rect', { x: cx - w * k / 2, y: cy - hh * k / 2, width: w * k, height: hh * k, ...attrs }));
+  // all frames, largest first so the small ones are drawn on top; labels at the top-right inside
+  // corner, pushed down while they would overlap a label placed before
+  const placed = [];
+  const labelY = (x2, y, w) => { for (;;) { const hit = placed.find(b => Math.abs(b.y - y) < 12 && x2 > b.x1 && x2 - w < b.x2); if (!hit) break; y = hit.y + 13; } placed.push({ x1: x2 - w, x2, y }); return y; };
+  for (const n of names) {
+    const [w, hh] = O.FORMATS[n], isSrc = n === src, isDst = n === dst;
+    rect(w, hh, { fill: isSrc ? '#4fa8ff' : 'none', 'fill-opacity': 0.18, stroke: isDst ? '#3ee6ff' : isSrc ? '#4fa8ff' : '#6a6e78',
+                  'stroke-width': isDst || isSrc ? 2 : 1 });
+    if (isSrc || isDst || (hh * k > 40 && w * k > 6.5 * n.length + 16)) {   // small frames go unlabelled, the table names them
+      const x2 = cx + w * k / 2 - 4;
+      const attrs = { x: x2, y: labelY(x2, cy - hh * k / 2 + 13, 6.5 * n.length), 'text-anchor': 'end' };
+      if (isDst || isSrc) attrs.fill = isDst ? '#3ee6ff' : '#4fa8ff';
+      svg.append(svgEl('text', attrs, n));
+    }
+  }
+  // the compared format's shape, matched to the source in the chosen dimension
+  const [sw, sh] = O.FORMATS[src], [dw, dh] = O.FORMATS[dst];
+  const scale = O.measure(src, ref) / O.measure(dst, ref);
+  rect(dw * scale, dh * scale, { fill: 'none', stroke: '#4fa8ff', 'stroke-width': 1.5, 'stroke-dasharray': '6 4' });
+  // mark the matched dimension on the source frame
+  const m = ref === 'diagonal' ? [cx - sw * k / 2, cy + sh * k / 2, cx + sw * k / 2, cy - sh * k / 2]
+          : ref === 'width' ? [cx - sw * k / 2, cy, cx + sw * k / 2, cy] : [cx, cy - sh * k / 2, cx, cy + sh * k / 2];
+  svg.append(svgEl('line', { x1: m[0], y1: m[1], x2: m[2], y2: m[3], stroke: '#4fa8ff', 'stroke-width': 1, 'stroke-dasharray': '2 3' }));
+  container.replaceChildren(svg);
+}
+
+// ---------------------------------------------------------------------------
 // App shell
 // ---------------------------------------------------------------------------
 function renderNav() {
@@ -409,6 +552,7 @@ function renderNav() {
 function renderTool() {
   const root = document.getElementById('tool');
   root.replaceChildren();
+  renderShared();   // the side panel depends on the tool (its own inputs, whether the CoC card is shown)
   tools[S.tool].render(root);
   update();
 }

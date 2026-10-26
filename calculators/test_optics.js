@@ -37,5 +37,18 @@ check('focus spread, Hansma', O.focusSpread(4, 0.1).hansma, Math.sqrt(1500));
 check('tilt for hinge at 1.2 m with 150 mm', O.tiltForHinge(150, 1200) * 180 / Math.PI, Math.asin(0.125) * 180 / Math.PI);
 check('hinge distance round trip', O.hingeDistance(150, O.tiltForHinge(150, 1200)), 1200);
 
+// formats and equivalence
+check('crop factor of 35 mm is 1', O.cropFactor('35 mm'), 1);
+check('crop factor APS-C (diagonal)', O.cropFactor('APS-C'), Math.hypot(36, 24) / Math.hypot(23.5, 15.6));
+check('crop factor 4x5 by width', O.cropFactor('4x5"', 'width'), 36 / 120);
+check('equivalent focal 50 mm, 35 mm -> 4x5 (diagonal)', O.equivalentFocal(50, '35 mm', '4x5"'), 50 * Math.hypot(120, 95) / Math.hypot(36, 24));
+check('equivalent focal round trip', O.equivalentFocal(O.equivalentFocal(50, '35 mm', '4x5"', 'height'), '4x5"', '35 mm', 'height'), 50);
+check('equivalent aperture scales like the focal length', O.equivalentAperture(11, '35 mm', '4x5"'), 11 * Math.hypot(120, 95) / Math.hypot(36, 24));
+const aov = O.anglesOfView('35 mm', 50), deg = r => r * 180 / Math.PI;
+check('50 mm on 35 mm: diagonal angle 46.8°', deg(aov.d), 46.79, 1e-3);
+check('50 mm on 35 mm: horizontal angle 39.6°', deg(aov.h), 39.60, 1e-3);
+check('50 mm on 35 mm: vertical angle 27.0°', deg(aov.v), 26.99, 1e-3);
+check('scene width of 50 mm on 35 mm at 3 m', O.sceneCoverage('35 mm', 50, 3000).width, 36 * 2950 / 50);
+
 console.log(fails ? `${fails} failure(s)` : 'all checks passed');
 process.exit(fails ? 1 : 0);

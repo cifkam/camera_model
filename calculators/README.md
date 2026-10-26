@@ -22,6 +22,9 @@ step; open the file in a browser or publish it with the rest of the repository.
   logarithmic distance axis and near/far-vs-focus curves for every aperture, both draggable.
 - Hyperfocal table by focal length and aperture.
 - DoF table (near – far by focus distance and aperture) for the current lens.
+- Formats: crop factors, the equivalent focal length and aperture on another format (matched by
+  diagonal, width or height), angles of view, scene coverage at the focus distance, the formats
+  drawn to scale and a comparison table of all formats.
 
 Distances are measured from the lens (thin-lens model); camera distance scales usually measure
 from the film plane, which adds the image distance (about one focal length).

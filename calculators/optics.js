@@ -53,12 +53,29 @@
   // defocus against diffraction: N = sqrt(375 * delta) with delta in mm.
   const focusSpread = (delta, c) => ({ geometric: delta / (2 * c), hansma: Math.sqrt(375 * delta) });
 
+  // Formats and equivalence. `ref` is the dimension compared: 'diagonal' (the usual crop factor),
+  // 'width' (long edge) or 'height' (short edge), since aspect ratios differ between formats.
+  const measure = (fmt, ref = 'diagonal') => ref === 'width' ? FORMATS[fmt][0] : ref === 'height' ? FORMATS[fmt][1] : diagonal(fmt);
+  // crop factor of a format relative to a base format (35 mm by default): > 1 for smaller formats
+  const cropFactor = (fmt, ref = 'diagonal', base = '35 mm') => measure(base, ref) / measure(fmt, ref);
+  // focal length on format `to` with the same angle of view (in the reference dimension) as f on `from`
+  const equivalentFocal = (f, from, to, ref = 'diagonal') => f * measure(to, ref) / measure(from, ref);
+  // f-number on `to` giving the same depth of field and the same blur as N on `from`, for the same
+  // framing and the same print size (the entrance pupil f/N stays the same)
+  const equivalentAperture = (N, from, to, ref = 'diagonal') => N * measure(to, ref) / measure(from, ref);
+  // angles of view (rad) of focal length f on a format, lens focused at infinity
+  const anglesOfView = (fmt, f) => ({ h: angleOfView(FORMATS[fmt][0], f), v: angleOfView(FORMATS[fmt][1], f), d: angleOfView(diagonal(fmt), f) });
+  // scene width and height (mm) covered by the gate at subject distance s (mm): object size =
+  // image size × (s − f) / f, from the thin-lens magnification
+  const sceneCoverage = (fmt, f, s) => ({ width: FORMATS[fmt][0] * (s - f) / f, height: FORMATS[fmt][1] * (s - f) / f });
+
   // Scheimpflug: lens tilt (rad) that puts the hinge line at distance J below the lens
   const tiltForHinge = (f, J) => Math.asin(f / J);
   const hingeDistance = (f, tiltRad) => f / Math.sin(tiltRad);
 
   const Optics = { FORMATS, IMAGE_CIRCLE, APERTURES, diagonal, cocFromPrint, hyperfocal, dof, extensionFor,
-                   subjectFor, bellows, angleOfView, focusSpread, tiltForHinge, hingeDistance };
+                   subjectFor, bellows, angleOfView, focusSpread, tiltForHinge, hingeDistance,
+                   measure, cropFactor, equivalentFocal, equivalentAperture, anglesOfView, sceneCoverage };
   root.Optics = Optics;
   if (typeof module !== 'undefined' && module.exports) module.exports = Optics;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
