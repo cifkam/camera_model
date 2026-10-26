@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera model (side view)</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1c1e22; font-family: system-ui, sans-serif; }
+  #view { display: block; width: 100vw; height: 100vh; touch-action: none; user-select: none; cursor: grab; }
+  #view.panning { cursor: grabbing; }
+  #view text { font-family: system-ui, sans-serif; font-size: 11px; fill: #9aa0a8; pointer-events: none; }
+  #view .handle { cursor: move; }
+  #info {
+    position: absolute; left: 12px; bottom: 12px; max-width: min(720px, calc(100vw - 360px));
+    color: #e6e6e6; background: rgba(0,0,0,.55); backdrop-filter: blur(4px);
+    padding: 10px 14px; border-radius: 8px; font-size: 13px; line-height: 1.55;
+    pointer-events: none; white-space: pre-wrap; font-variant-numeric: tabular-nums;
+  }
+  #info b { color: #fff; }
+  #infoTitle {
+    pointer-events: auto; cursor: pointer; user-select: none; color: #bbb; font-weight: 600; font-size: 12px;
+    margin: -2px 0 4px; letter-spacing: .02em;
+  }
+  #infoTitle:hover { color: #fff; }
+  #infoTitle::before { content: '▾ '; }
+  #info.closed #infoTitle::before { content: '▸ '; }
+  #info.closed #infoTitle { margin: 0; }
+  #info.closed #infoBody { display: none; }
+  #info.closed { padding: 6px 12px; }
+  @media (max-width: 700px) {
+    #info { left: 8px; right: 8px; bottom: 8px; max-width: none; font-size: 11px; line-height: 1.45; padding: 8px 26px 8px 10px; }
+    #help { display: none; }
+  }
+  @media (pointer: coarse) { #help { display: none; } }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .warn { color: #ffb347; }
+  #help { position: absolute; left: 12px; top: 12px; color: #aaa; font-size: 12px; pointer-events: none; }
+  body .lil-gui.root { border: 1px solid #666; }
+  /* checkbox rows: checkbox first, label after, so long labels never push the box around */
+  body .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
+  body .lil-gui .controller.boolean .name { width: auto; min-width: 0; flex: 1 1 auto; }
+  body .lil-gui .controller.boolean .widget { width: auto; flex: 0 0 auto; margin-right: 10px; }
+</style>
+</head>
+<body>
+<svg id="view" xmlns="http://www.w3.org/2000/svg"></svg>
+<div id="help">drag: pan · wheel: zoom · drag the round handles (focus point, hinge) · <a href="../" style="color: #9ad8ff; pointer-events: auto">all tools</a> · <a href="../3D/" style="color: #9ad8ff; pointer-events: auto">3D model</a></div>
+<div id="info"><div id="infoTitle">Legend</div><div id="infoBody"></div></div>
+<script type="module">
+import { GUI, NumberController } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/lil-gui.module.min.js';
+
+// Everything happens in the vertical plane through the lens axis: x forward (towards the subject),
+// y up, in metres; camera dimensions in mm. Same conventions and colours as the 3D model.
+
+// lil-gui number controller whose slider track follows a non-linear mapping (see the 3D page)
+class MappedNumberController extends NumberController {
+  constructor(parent, object, property, min, max, step, map) {
+    super(parent, object, property, min, max, step);
+    this._map = map;
+    this.updateDisplay();
+  }
+  _setDraggingStyle(active, type) {
+    this._sliderDrag = active && type !== 'vertical';
+    return super._setDraggingStyle(active, type);
+  }
+  _snapClampSetValue(v) {
+    if (this._sliderDrag && this._map) v = this._map.fromFrac((v - this._min) / (this._max - this._min), this._min, this._max);
+    return super._snapClampSetValue(v);
+  }
+  updateDisplay() {
+    super.updateDisplay();
+    if (this._hasSlider && this._map)
+      this.$fill.style.width = 100 * Math.max(0, Math.min(1, this._map.toFrac(this.getValue(), this._min, this._max))) + '%';
+    return this;
+  }
+}
+const LOG_MAP = {
+  fromFrac: (t, lo, hi) => lo > 0 ? Math.exp(Math.log(lo) + t * (Math.log(hi) - Math.log(lo))) : lo + t * (hi - lo),
+  toFrac: (v, lo, hi) => lo > 0 ? (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) : (v - lo) / (hi - lo),
+};
+const symPowMap = p => ({
+  fromFrac: (t, lo, hi) => { const u = 2 * t - 1; return Math.sign(u) * hi * Math.abs(u) ** p; },
+  toFrac: (v, lo, hi) => (Math.sign(v) * (Math.abs(v) / hi) ** (1 / p) + 1) / 2,
+});
+const ANGLE_MAP = symPowMap(2);
+
+// ----------------------------------------------------------------------------
+// Parameters
+// ----------------------------------------------------------------------------
+const MM = 0.001, DEG = Math.PI / 180;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const FORMATS = {
+  '8x10"': [245, 195], '5x7"': [170, 120], '4x5"': [120, 95],
+  '6x9 roll': [84, 56], '6x7 roll': [69.5, 56], '6x6 roll': [56, 56], '6x4.5 roll': [56, 41.5], '35 mm': [36, 24],
+  'APS-C': [23.5, 15.6], 'phone 1/1.56"': [8.2, 6.2],
+};
+const IMAGE_CIRCLE = { '8x10"': 420, '5x7"': 300, '4x5"': 220,
+                       '6x9 roll': 125, '6x7 roll': 100, '6x6 roll': 90, '6x4.5 roll': 80, '35 mm': 45,
+                       'APS-C': 30, 'phone 1/1.56"': 11 };
+function formatRanges(format = P.format) {
+  const [w, h] = FORMATS[format], diag = Math.hypot(w, h);
+  return {
+    focal: [Math.round(0.3 * diag), Math.round(2.5 * diag)],
+    imageCircle: [Math.round(0.8 * diag), Math.round(3 * diag)],
+    extension: [Math.round(0.25 * diag), Math.round(3 * diag)],
+    shift: Math.round(0.6 * w),
+  };
+}
+const DEFAULT_FOCUS = 3000;   // mm
+const separationFor = (f, d) => f * d / (d - f);
+const TILT_MAX = 45;
+
+const P = {
+  focal: 150, extension: separationFor(150, DEFAULT_FOCUS), focusDist: DEFAULT_FOCUS * MM,
+  camera: 'normal camera', cameraPitch: 0,
+  format: '4x5"', orientation: 'landscape', autoLens: true, refocusOnFocal: true,
+  frontTilt: 0, frontRise: 0, rearTilt: 0, rearRise: 0, tiltPivot: 'axis',
+  imageCircle: 220,
+  cameraHeight: 1.2, background: 'dark',
+  fnumber: 11, cocMode: 'from print', printLong: 40, viewDist: 50, eyeRes: 1500, coc: 0.1,
+  showSharpArea: true, showFullPlane: false, showDof: true, showDofPlanes: false, showFov: true,
+  showCoverage: true, showCoverageCone: false, showPlanes: true, showLines: true, showHyperfocal: true,
+  showBellows: true, showGround: true, showUnderground: true, showGrid: true,
+};
+const ZERO = { frontTilt: 0, frontRise: 0, rearTilt: 0, rearRise: 0 };
+const THEMES = {
+  black: { bg: '#000000', ground: '#0a0a0a', gridMinor: '#2c2c2c', gridMajor: '#5c5c5c', label: '#8a8a8a' },
+  dark:  { bg: '#1c1e22', ground: '#23262c', gridMinor: '#3b4050', gridMajor: '#666e85', label: '#9aa0a8' },
+  grey:  { bg: '#6b6f78', ground: '#7a7e88', gridMinor: '#959aa8', gridMajor: '#c2c6d2', label: '#e0e3ea' },
+  light: { bg: '#e8e9ec', ground: '#dcdde2', gridMinor: '#b8bac4', gridMajor: '#8a8c96', label: '#5a5c66' },
+  white: { bg: '#ffffff', ground: '#f2f2f4', gridMinor: '#cfcfd6', gridMajor: '#a0a0a8', label: '#6a6a72' },
+};
+const COL = {
+  posf: '#4fe07a', posfVirtual: '#ff8a3d', film: '#ffffff', lens: '#4fa8ff',
+  scheimpflug: '#ff4fd8', hinge: '#ffd84f', axis: '#9ad8ff', fov: '#c9a0ff', dof: '#3ee6ff', vignette: '#ff5252',
+  coverage: '#9a9a9a', hyperfocal: '#ffb347',
+};
+const FAR = 1000;   // the scene box (m) in every direction: lines effectively run to infinity, the view is zoomable
+
+function circleOfConfusion(filmLongEdgeMM) {
+  if (P.cocMode === 'manual') return { coc: P.coc, enlargement: NaN, printBlur: NaN };
+  const printBlur = P.viewDist * 10 / P.eyeRes;
+  const enlargement = P.printLong * 10 / filmLongEdgeMM;
+  return { coc: printBlur / enlargement, enlargement, printBlur };
+}
+
+// ----------------------------------------------------------------------------
+// 2D vectors, lines (n·p + d = 0) and convex clipping
+// ----------------------------------------------------------------------------
+const V = (x, y) => ({ x, y });
+const add = (a, b) => V(a.x + b.x, a.y + b.y), sub = (a, b) => V(a.x - b.x, a.y - b.y);
+const mul = (a, s) => V(a.x * s, a.y * s), dot = (a, b) => a.x * b.x + a.y * b.y;
+const len = a => Math.hypot(a.x, a.y), norm = a => mul(a, 1 / len(a));
+const perp = a => V(-a.y, a.x);                               // rotated +90°
+const rot = (a, t) => V(a.x * Math.cos(t) - a.y * Math.sin(t), a.x * Math.sin(t) + a.y * Math.cos(t));
+const dist = (a, b) => len(sub(a, b));
+const lineFrom = (p, n) => ({ n, d: -dot(n, p) });
+const sdf = (l, p) => dot(l.n, p) + l.d;
+function normalizeLine(l) { const L = len(l.n); return L < 1e-12 ? null : { n: mul(l.n, 1 / L), d: l.d / L }; }
+function intersectLines(a, b) {
+  const det = a.n.x * b.n.y - a.n.y * b.n.x;
+  if (Math.abs(det) < 1e-12) return null;
+  return V((-a.d * b.n.y + b.d * a.n.y) / det, (-a.n.x * b.d + b.n.x * a.d) / det);
+}
+// segment [a, b] clipped to the half-planes (inside: sdf >= 0); null if nothing is left
+function clipSegment(a, b, hps) {
+  for (const h of hps) {
+    const sa = sdf(h, a), sb = sdf(h, b);
+    if (sa < 0 && sb < 0) return null;
+    if (sa < 0) a = add(a, mul(sub(b, a), sa / (sa - sb)));
+    else if (sb < 0) b = add(b, mul(sub(a, b), sb / (sb - sa)));
+  }
+  return [a, b];
+}
+function clipPolygon(poly, hps) {   // Sutherland–Hodgman
+  for (const h of hps) {
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i], q = poly[(i + 1) % poly.length], sp = sdf(h, p), sq = sdf(h, q);
+      if (sp >= 0) out.push(p);
+      if ((sp >= 0) !== (sq >= 0)) out.push(add(p, mul(sub(q, p), sp / (sp - sq))));
+    }
+    poly = out;
+    if (poly.length < 3) return [];
+  }
+  return poly;
+}
+// a long segment on the line, to be clipped afterwards
+function lineSegment(l, L) {
+  const p0 = mul(l.n, -l.d), dir = perp(l.n);
+  return [sub(p0, mul(dir, L)), add(p0, mul(dir, L))];
+}
+
+// ----------------------------------------------------------------------------
+// Geometry of the camera and the optics (all world coordinates, metres)
+// ----------------------------------------------------------------------------
+function frameSizes() {
+  const [w, h] = FORMATS[P.format];
+  const ih = (P.orientation === 'portrait' ? w : h) * MM;      // image height in the side view
+  const bar = clamp(0.32 * ih, 0.006, 0.03);
+  const lr = clamp(0.2 * Math.hypot(w, h) * MM, 0.004, 0.03);
+  return { ih, bar, fh: ih + 2 * bar, lr };
+}
+// a standard in camera-local coordinates: centre c, up vector u, forward normal n
+function standardPose(x, riseMM, tiltDeg, fh) {
+  const t = tiltDeg * DEG, u = V(Math.sin(t), Math.cos(t)), n = V(Math.cos(t), -Math.sin(t));
+  let c = V(x, riseMM * MM);
+  if (P.tiltPivot === 'base') c = add(V(x, riseMM * MM - fh / 2), mul(u, fh / 2));
+  return { c, u, n };
+}
+function geometry() {
+  const { ih, bar, fh, lr } = frameSizes();
+  const f = P.focal * MM, ext = P.extension * MM;
+  const rearL = standardPose(-ext, P.rearRise, P.rearTilt, fh);
+  const frontL = standardPose(0, P.frontRise, P.frontTilt, fh);
+  // the whole camera is pitched about the lens centre, which sits at height cameraHeight
+  const pitch = P.cameraPitch * DEG, Cw = V(0, P.cameraHeight);
+  const toWorldP = p => add(Cw, rot(sub(p, frontL.c), pitch)), toWorldV = v => rot(v, pitch);
+  const front = { c: toWorldP(frontL.c), u: toWorldV(frontL.u), n: toWorldV(frontL.n) };
+  const rear = { c: toWorldP(rearL.c), u: toWorldV(rearL.u), n: toWorldV(rearL.n) };
+  const C = front.c, ul = front.u, nl = front.n;
+  const filmW = lineFrom(rear.c, rear.n);
+  // film line in lens coordinates (y along ul, z along nl)
+  const filmL = { b: dot(rear.n, ul), c: dot(rear.n, nl), d: filmW.d + dot(rear.n, C) };
+  // image of a film-side line (b, c, d) -> (b f, c f - d, d f), back to world
+  const imageLine = (dl) => {
+    const nw = add(mul(ul, filmL.b * f), mul(nl, filmL.c * f - dl));
+    return normalizeLine({ n: nw, d: dl * f - dot(nw, C) });
+  };
+  const s = Math.abs(filmL.c) > 1e-12 ? filmL.d / filmL.c : Infinity;    // on-axis film distance (behind the lens)
+  const virtual = !(s > f);
+  const dObj = virtual ? Infinity : f * s / (s - f);
+  const coc = circleOfConfusion(FORMATS[P.format][0]).coc * MM;
+  const k = coc * P.fnumber / f;
+  const posf = imageLine(filmL.d), near = imageLine(filmL.d / (1 - k)), far = imageLine(filmL.d / (1 + k));
+  const lensLine = lineFrom(C, nl), focalLine = lineFrom(add(C, mul(nl, f)), nl), filmParallel = lineFrom(C, rear.n);
+  const hinge = posf && intersectLines(posf, focalLine);
+  const scheimpflug = intersectLines(filmW, lensLine);
+  const lensFilmAngle = Math.acos(clamp(Math.abs(dot(nl, rear.n)), 0, 1));
+  const J = hinge ? dist(hinge, C) : Infinity;
+  // in-focus interval along the lens axis: s0 = alpha + beta / t, in focus iff |1 - s0| <= k
+  let axisIv = null;
+  if (Math.abs(filmL.c) > 1e-12) {
+    const alpha = filmL.d / (f * filmL.c), beta = -filmL.d / filmL.c;
+    let w0 = (1 - k - alpha) / beta, w1 = (1 + k - alpha) / beta;
+    if (w0 > w1) [w0, w1] = [w1, w0];
+    w0 = Math.max(w0, 0);
+    if (w1 > 0 && w0 <= w1) axisIv = { near: 1 / w1, far: w0 > 0 ? 1 / w0 : Infinity };
+  }
+  // field of view: rays from the lens centre through the film edges
+  const Pt = add(rear.c, mul(rear.u, ih / 2)), Pb = sub(rear.c, mul(rear.u, ih / 2));
+  const dT = norm(sub(C, Pt)), dB = norm(sub(C, Pb));
+  const fovOk = dot(dT, nl) > 1e-6 && dot(dB, nl) > 1e-6 && Math.abs(dT.x * dB.y - dT.y * dB.x) > 1e-9;
+  // lens coverage: image circle at infinity -> half-angle of the cone from the lens centre
+  const covAngle = Math.atan((P.imageCircle * MM / 2) / f);
+  const edgeAngle = p => Math.acos(clamp(dot(norm(sub(p, C)), mul(nl, -1)), -1, 1));
+  const vigT = edgeAngle(Pt) > covAngle + 1e-9, vigB = edgeAngle(Pb) > covAngle + 1e-9;
+  return { ih, bar, fh, lr, f, ext, rearL, frontL, front, rear, C, ul, nl, filmW, filmL, s, virtual, dObj, coc, k,
+           posf, near, far, lensLine, focalLine, filmParallel, hinge, scheimpflug, lensFilmAngle, J, axisIv,
+           Pt, Pb, dT, dB, fovOk, covAngle, vigT, vigB, pitch, toWorldP, toWorldV };
+}
+// move the rear standard along the rail until the lens axis is focused at distance d (m)
+function setSeparationForFocus(d) {
+  const R = formatRanges(), f = P.focal;
+  const sWanted = separationFor(f, d * 1000);                      // mm, on the axis
+  for (let i = 0; i < 8; i++) {                                    // the rail distance differs from s with tilts/rises
+    const g = geometry();
+    const sNow = Number.isFinite(g.s) ? g.s / MM : P.extension;
+    P.extension = clamp(P.extension + (sWanted - sNow), R.extension[0], R.extension[1]);
+  }
+  const g = geometry();
+  P.focusDist = Number.isFinite(g.dObj) ? g.dObj : FOCUS_SLIDER_CAP;
+}
+
+// ----------------------------------------------------------------------------
+// View (pan / zoom) and SVG drawing
+// ----------------------------------------------------------------------------
+const svg = document.getElementById('view');
+const NS = 'http://www.w3.org/2000/svg';
+const view = { k: 100, ox: 0, oy: 0 };   // screen = (ox + k x, oy - k y)
+const S = p => V(view.ox + view.k * p.x, view.oy - view.k * p.y);
+const Winv = q => V((q.x - view.ox) / view.k, (view.oy - q.y) / view.k);
+function resetView() {
+  const W = svg.clientWidth, Hp = svg.clientHeight;
+  const panel = W > 700 ? 320 : 0;
+  view.k = clamp(Math.min(0.8 * (W - panel) / 7, 0.65 * Hp / (P.cameraHeight + 1.6)), 12, 600);
+  view.ox = 0.1 * W + 0.6 * view.k;
+  view.oy = 0.78 * Hp;
+}
+function el(tag, attrs, parent = svg) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
+  parent.appendChild(e);
+  return e;
+}
+const pts = poly => poly.map(p => { const q = S(p); return q.x.toFixed(1) + ',' + q.y.toFixed(1); }).join(' ');
+function seg(a, b, stroke, width = 1.5, extra = {}) {
+  const p = S(a), q = S(b);
+  return el('line', { x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke, 'stroke-width': width, ...extra });
+}
+function poly(points, fill, opacity, stroke = null, extra = {}) {
+  if (points.length < 3) return null;
+  return el('polygon', { points: pts(points), fill, 'fill-opacity': opacity, stroke, 'stroke-width': stroke ? 1.2 : 0, ...extra });
+}
+const fmt = (x, d = 2) => Number.isFinite(x) ? x.toFixed(d) : (x === Infinity ? '∞' : '–');
+const sw = c => `<span class="sw" style="background:${c}"></span>`;
+
+let handles = [];   // { p: world point, kind, color }
+let G = null;       // last geometry
+
+function update() {
+  G = geometry();
+  const g = G, T = THEMES[P.background] || THEMES.dark;
+  svg.style.background = T.bg;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  handles = [];
+  const H = P.cameraHeight;
+  const yMin = P.showUnderground ? -FAR : 0, yMax = FAR;
+  const box = [V(-FAR, yMin), V(FAR, yMin), V(FAR, yMax), V(-FAR, yMax)];
+  const boxHp = [lineFrom(V(-FAR, 0), V(1, 0)), lineFrom(V(FAR, 0), V(-1, 0)), lineFrom(V(0, yMin), V(0, 1)), lineFrom(V(0, yMax), V(0, -1))];
+  const L = 4 * FAR;
+  // the part of the world that is on screen (for the grid and labels), and a grid spacing that suits the zoom
+  const tl = Winv(V(0, 0)), br = Winv(V(svg.clientWidth, svg.clientHeight));
+  const major = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500].find(m => m * view.k >= 80) || 1000;
+  const minor = major / 5 * view.k >= 14 ? major / 5 : major;
+  const gridX = [Math.floor(tl.x / minor) * minor, Math.ceil(br.x / minor) * minor], gridY = [Math.max(0, Math.floor(br.y / minor) * minor), Math.ceil(tl.y / minor) * minor];
+  const isMajor = v => Math.abs(v / major - Math.round(v / major)) < 1e-6;
+  const label = v => (major < 1 ? v.toFixed(1) : String(Math.round(v))) + ' m';
+  const clipLine = (line, hps = []) => line ? clipSegment(...lineSegment(line, L), boxHp.concat(hps)) : null;
+  const { C, ul, nl, f } = g;
+  const frontHp = lineFrom(C, nl);                                 // in front of the lens plane
+  const focalHp = lineFrom(add(C, mul(nl, f)), nl);                // beyond the front focal line: real images only
+  const viewCam = P.camera === 'view camera';
+
+  // --- grid, ground --------------------------------------------------------
+  if (P.showGrid) {
+    for (let x = gridX[0]; x <= gridX[1] + 1e-9; x += minor)
+      seg(V(x, gridY[0]), V(x, gridY[1]), isMajor(x) ? T.gridMajor : T.gridMinor, isMajor(x) ? 1 : 0.6, { 'stroke-opacity': isMajor(x) ? 0.55 : 0.4 });
+    for (let y = gridY[0]; y <= gridY[1] + 1e-9; y += minor)
+      seg(V(gridX[0], y), V(gridX[1], y), isMajor(y) ? T.gridMajor : T.gridMinor, isMajor(y) ? 1 : 0.6, { 'stroke-opacity': isMajor(y) ? 0.55 : 0.4 });
+  }
+
+  // --- field of view (frustum) ---------------------------------------------
+  let frustumHp = null, frustum = [];
+  if (g.fovOk) {
+    const mT = perp(g.dT), mB = perp(g.dB);
+    const hT = lineFrom(C, dot(mT, g.dB) > 0 ? mT : mul(mT, -1)), hB = lineFrom(C, dot(mB, g.dT) > 0 ? mB : mul(mB, -1));
+    frustumHp = [frontHp, hT, hB];
+    frustum = clipPolygon(box, frustumHp);
+  }
+  if (P.showFov && frustum.length) {
+    poly(frustum, COL.fov, 0.08);
+    for (const [d, vig] of [[g.dT, g.vigT], [g.dB, g.vigB]]) {
+      const r = clipSegment(C, add(C, mul(d, L)), boxHp);
+      if (r) seg(r[0], r[1], vig ? COL.vignette : COL.fov, 1.2, { 'stroke-opacity': 0.9 });
+    }
+  }
+
+  // --- depth of field ------------------------------------------------------
+  // orientation of the near/far half-planes: the side that contains the plane of sharp focus
+  let dofPoly = [], nearHp = null, farHp = null;
+  if (g.posf && g.near && g.far) {
+    let cand = null;
+    const ps = clipLine(g.posf, [focalHp]);
+    if (ps) cand = mul(add(ps[0], ps[1]), 0.5);
+    if (cand) {
+      const orient = l => sdf(l, cand) >= 0 ? l : { n: mul(l.n, -1), d: -l.d };
+      nearHp = orient(g.near); farHp = orient(g.far);
+      if (frustumHp) dofPoly = clipPolygon(box, frustumHp.concat([focalHp, nearHp, farHp]));
+    }
+  }
+  if (P.showDofPlanes && g.near && g.far) {
+    for (const l of [g.near, g.far]) { const r = clipLine(l, [focalHp]); if (r) seg(r[0], r[1], COL.dof, 1, { 'stroke-opacity': 0.5, 'stroke-dasharray': '6 4' }); }
+  }
+  if (P.showDof && dofPoly.length) poly(dofPoly, COL.dof, 0.22, COL.dof, { 'stroke-opacity': 0.7 });
+
+  // --- extended film and lens lines, construction lines ---------------------
+  if (P.showPlanes) {
+    const rf = clipLine(g.filmW); if (rf) seg(rf[0], rf[1], COL.film, 1, { 'stroke-opacity': 0.35 });
+    const rl = clipLine(g.lensLine); if (rl) seg(rl[0], rl[1], COL.lens, 1, { 'stroke-opacity': 0.45 });
+  }
+  if (P.showLines && viewCam) {
+    const rF = clipLine(g.focalLine); if (rF) seg(rF[0], rF[1], COL.hinge, 1, { 'stroke-opacity': 0.4, 'stroke-dasharray': '2 5' });
+    const rP = clipLine(g.filmParallel); if (rP) seg(rP[0], rP[1], COL.hinge, 1, { 'stroke-opacity': 0.4, 'stroke-dasharray': '2 5' });
+  }
+
+  // --- lens coverage ---------------------------------------------------------
+  const anyVig = g.vigT || g.vigB, covCol = anyVig ? COL.vignette : COL.coverage;
+  if (P.showCoverage) {
+    for (const sgn of [1, -1]) {
+      const d = rot(mul(nl, -1), sgn * g.covAngle);
+      const hit = intersectLines(lineFrom(C, perp(d)), g.filmW);
+      const end = hit && dot(sub(hit, C), d) > 0 ? hit : add(C, mul(d, 3 * g.ext + 0.05));
+      seg(C, end, covCol, 1, { 'stroke-opacity': 0.8, 'stroke-dasharray': '3 3' });
+    }
+  }
+  if (P.showCoverageCone) {
+    for (const sgn of [1, -1]) {
+      const r = clipSegment(C, add(C, mul(rot(nl, sgn * g.covAngle), L)), boxHp);
+      if (r) seg(r[0], r[1], covCol, 1, { 'stroke-opacity': 0.5, 'stroke-dasharray': '3 3' });
+    }
+  }
+
+  // --- plane of sharp focus ----------------------------------------------------
+  const posfColor = g.virtual ? COL.posfVirtual : COL.posf;
+  let sharpSeg = null;
+  if (g.posf) {
+    if (P.showFullPlane) { const r = clipLine(g.posf, [focalHp]); if (r) seg(r[0], r[1], posfColor, 1.2, { 'stroke-opacity': 0.55 }); }
+    if (P.showSharpArea && frustumHp) {
+      sharpSeg = clipLine(g.posf, frustumHp.concat([focalHp]));
+      if (sharpSeg) seg(sharpSeg[0], sharpSeg[1], posfColor, 3.5);
+    }
+  }
+
+  // --- lens axis and focus point -----------------------------------------------
+  {
+    const r = clipSegment(C, add(C, mul(nl, L)), boxHp);
+    if (r) seg(r[0], r[1], COL.axis, 1, { 'stroke-opacity': 0.6 });
+    if (!g.virtual) {
+      const F = add(C, mul(nl, g.dObj));
+      handles.push({ p: F, kind: 'focus', color: COL.axis });
+    }
+  }
+
+  // --- hyperfocal distance: a line across the axis at H (untilted lens formula) ---------------
+  const Hf = f * f / (P.fnumber * g.coc) + f;
+  if (P.showHyperfocal) {
+    const r = clipLine(lineFrom(add(C, mul(nl, Hf)), nl));
+    if (r) {
+      seg(r[0], r[1], COL.hyperfocal, 1.2, { 'stroke-opacity': 0.8, 'stroke-dasharray': '8 5' });
+      const q = S(add(C, mul(nl, Hf)));
+      el('text', { x: q.x + 5, y: q.y - 6, style: 'fill:' + COL.hyperfocal }).textContent = 'H ' + fmt(Hf, 1) + ' m';
+    }
+  }
+
+  // --- camera ------------------------------------------------------------------
+  drawCamera(g);
+
+  // --- ground: an overlay that dims whatever lies below it ---------------------
+  if (P.showGround) {
+    const g0 = S(V(0, 0));
+    el('rect', { x: 0, y: g0.y, width: svg.clientWidth, height: Math.max(0, svg.clientHeight - g0.y), fill: T.ground, 'fill-opacity': 0.8 });
+    seg(V(tl.x, 0), V(br.x, 0), T.gridMajor, 1.5);
+  }
+  // distance labels along the ground line, heights at the left edge of the box
+  if (P.showGrid) {
+    for (let x = Math.ceil(gridX[0] / major) * major; x <= gridX[1] + 1e-9; x += major) {
+      const q = S(V(x, 0)); el('text', { x: q.x + 3, y: Math.min(q.y + 13, svg.clientHeight - 4), style: 'fill:' + T.label }).textContent = label(x);
+    }
+    for (let y = Math.max(major, Math.ceil(gridY[0] / major) * major); y <= gridY[1] + 1e-9; y += major) {
+      const q = S(V(gridX[0], y)); el('text', { x: 4, y: q.y - 3, style: 'fill:' + T.label }).textContent = label(y);
+    }
+  }
+
+  // --- Scheimpflug and hinge points ---------------------------------------------
+  if (P.showLines && viewCam) {
+    if (g.scheimpflug) { const q = S(g.scheimpflug); el('circle', { cx: q.x, cy: q.y, r: 4, fill: COL.scheimpflug }); }
+    if (g.hinge) handles.push({ p: g.hinge, kind: 'hinge', color: COL.hinge });
+  }
+  for (const h of handles) {
+    const q = S(h.p);
+    el('circle', { cx: q.x, cy: q.y, r: 6, fill: h.color, stroke: '#000', 'stroke-width': 1, class: 'handle', 'data-kind': h.kind });
+  }
+
+  // --- legend ---------------------------------------------------------------------
+  const { coc, enlargement, printBlur } = circleOfConfusion(FORMATS[P.format][0]);
+  const lensFilmDeg = g.lensFilmAngle / DEG;
+  const posfAngle = g.posf ? Math.acos(clamp(Math.abs(dot(g.posf.n, g.rear.n)), 0, 1)) / DEG : NaN;
+  const mag = Number.isFinite(g.dObj) ? g.s / g.dObj : 0;
+  let txt = `<b>Lens</b> f = ${P.focal} mm · on-axis film distance ${fmt(g.s / MM, 1)} mm` +
+    (viewCam ? ` · lens/film angle ${fmt(lensFilmDeg, 1)}°` : '') + `\n`;
+  if (!g.posf) txt += `${sw(COL.posf)}Plane of sharp focus: <b>at infinity</b>\n`;
+  else if (g.virtual) txt += `<span class="warn">${sw(COL.posfVirtual)}Image distance ≤ f: focused "beyond infinity" (only the real part in front of the lens is drawn)</span>\n`;
+  else txt += `${sw(COL.posf)}<b>Plane of sharp focus</b>: on-axis distance ${fmt(g.dObj)} m (m = 1:${fmt(1 / mag, 0)})` +
+              (viewCam ? `, ${fmt(posfAngle, 1)}° from film plane` : '') + `\n`;
+  if (sharpSeg) {
+    const a = sharpSeg[0], b = sharpSeg[1], off = p => Math.max(Math.abs(p.x), Math.abs(p.y)) > 0.99 * FAR;
+    const pt = p => off(p) ? '∞' : `(${fmt(p.x, 1)}, ${fmt(p.y, 1)}) m`;
+    txt += `${sw(COL.fov)}<b>Sharp line in frame</b> (${P.format}, ${P.orientation}): from ${pt(a)} to ${pt(b)}` +
+           (off(a) || off(b) ? ` (runs off to infinity)` : `, length ${fmt(dist(a, b), 1)} m`) + `\n`;
+  } else if (g.posf && !g.fovOk) txt += `${sw(COL.fov)}Film edges look behind the lens: no field of view\n`;
+  else if (g.posf) txt += `${sw(COL.fov)}Frame does not meet the plane of sharp focus in front of the lens\n`;
+  txt += `${sw(covCol)}Coverage: image circle ${P.imageCircle} mm (half-angle ${fmt(g.covAngle / DEG, 1)}°): ` +
+    (anyVig ? `<span class="warn">film ${g.vigT && g.vigB ? 'top and bottom' : g.vigT ? 'top' : 'bottom'} edge outside → vignetting</span>` : 'film edges inside') + `\n`;
+  txt += `${sw(COL.dof)}<b>Depth of field</b> f/${P.fnumber}, CoC ${fmt(coc, 3)} mm` +
+    (P.cocMode === 'manual' ? '' : ` (${fmt(printBlur, 2)} mm on a ${P.printLong} cm print viewed from ${P.viewDist} cm, ${fmt(enlargement, 1)}× enlargement)`) + `\n`;
+  txt += g.axisIv
+    ? `   on the lens axis ${fmt(g.axisIv.near)} m – ${Number.isFinite(g.axisIv.far) ? fmt(g.axisIv.far) + ' m' : '∞'}   (${sw(COL.hyperfocal)}hyperfocal H = ${fmt(Hf, 1)} m)\n`
+    : `   nothing acceptably sharp along the lens axis\n`;
+  if (dofPoly.length && nearHp && farHp && frustumHp) {
+    // vertical sharp band at a few distances in front of the lens
+    const bands = [];
+    for (const x of [1, 2, 5, 10, 20, 50]) {
+      const r = clipSegment(V(x, yMin), V(x, yMax), frustumHp.concat([focalHp, nearHp, farHp]));
+      if (r) bands.push(`${x} m: ${fmt(Math.min(r[0].y, r[1].y), 2)}–${fmt(Math.max(r[0].y, r[1].y), 2)} m high`);
+    }
+    if (bands.length) txt += `   sharp band in frame at ${bands.join(', ')}\n`;
+  }
+  txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane`;
+  if (viewCam) {
+    txt += `\n${sw(COL.scheimpflug)}Scheimpflug point (film ∩ lens): ${g.scheimpflug ? `(${fmt(g.scheimpflug.x, 2)}, ${fmt(g.scheimpflug.y, 2)}) m` : 'at infinity (planes parallel)'}\n`;
+    txt += `${sw(COL.hinge)}Hinge: distance from lens J = ${Number.isFinite(g.J) ? fmt(g.J) + ' m' : '∞'}` +
+           (g.lensFilmAngle > 1e-6 ? `  (f / sin α = ${fmt(f / Math.sin(g.lensFilmAngle))} m)` : '') +
+           (g.hinge ? `, ${g.hinge.y < 0 ? fmt(-g.hinge.y) + ' m below' : fmt(g.hinge.y) + ' m above'} the ground` : '');
+    const hGround = C.y - 0;   // lens height above the ground along the film-parallel direction (untilted film)
+    if (f < hGround) txt += `\n   lens tilt for a hinge at ground level (film vertical): ${fmt(Math.asin(f / hGround) / DEG, 2)}°`;
+  }
+  document.getElementById('infoBody').innerHTML = txt;
+}
+
+function drawCamera(g) {
+  const { fh, ih, bar, lr, rearL, frontL, toWorldP, toWorldV } = g;
+  const R = formatRanges();
+  const railY = -(fh / 2 + 0.02), railLen = R.extension[1] * MM + 0.08;
+  const rect = (c, u, n, along, across, fill, opacity = 1, extra = {}) =>   // rectangle centred at c (local)
+    poly([add(add(c, mul(u, along / 2)), mul(n, across / 2)), add(sub(c, mul(u, along / 2)), mul(n, across / 2)),
+          sub(sub(c, mul(u, along / 2)), mul(n, across / 2)), sub(add(c, mul(u, along / 2)), mul(n, across / 2))].map(toWorldP),
+         fill, opacity, null, extra);
+  // rail and tripod
+  const railC = V(-railLen / 2 + 0.04, railY), ex = V(1, 0), ey = V(0, 1);
+  rect(railC, ex, ey, railLen, 0.012, '#3a3d44', 1, { stroke: '#555', 'stroke-width': 0.8 });
+  const top = toWorldP(V(railC.x, railY - 0.006));
+  seg(top, V(top.x, 0), '#44474f', 4);
+  if (top.y > 0.3) for (const sgn of [-1, 1]) seg(V(top.x, top.y * 0.75), V(top.x + sgn * 0.3, 0), '#44474f', 2.5);
+  // posts from the standards down to the rail
+  for (const st of [rearL, frontL]) {
+    const bottom = sub(st.c, mul(st.u, fh / 2));
+    seg(toWorldP(bottom), toWorldP(V(bottom.x, railY)), '#44474f', 3);
+  }
+  // bellows
+  if (P.showBellows) {
+    const corners = [add(rearL.c, mul(rearL.u, fh / 2 - bar / 2)), add(frontL.c, mul(frontL.u, fh / 2 - bar / 2)),
+                     sub(frontL.c, mul(frontL.u, fh / 2 - bar / 2)), sub(rearL.c, mul(rearL.u, fh / 2 - bar / 2))];
+    poly(corners.map(toWorldP), '#7a1f1f', 0.55);
+  }
+  // rear standard: frame with the ground glass (image area) as a white line
+  rect(rearL.c, rearL.u, rearL.n, fh, 0.008, '#5a4634');
+  seg(toWorldP(add(rearL.c, mul(rearL.u, ih / 2))), toWorldP(sub(rearL.c, mul(rearL.u, ih / 2))), COL.film, 2);
+  // front standard: lens board, barrel and glass
+  rect(frontL.c, frontL.u, frontL.n, fh, 0.008, '#4a3a2c');
+  rect(add(frontL.c, mul(frontL.n, 0.1 * lr)), frontL.u, frontL.n, 2 * lr, 1.85 * lr, '#9aa0a8');
+  seg(toWorldP(add(add(frontL.c, mul(frontL.n, 0.9 * lr)), mul(frontL.u, 0.87 * lr))),
+      toWorldP(sub(add(frontL.c, mul(frontL.n, 0.9 * lr)), mul(frontL.u, 0.87 * lr))), '#5aa9ff', 2.5);
+}
+
+// ----------------------------------------------------------------------------
+// Pointer interaction: pan, zoom, handles
+// ----------------------------------------------------------------------------
+let drag = null;   // { kind: 'pan' | 'focus' | 'hinge', last, id }
+const pointers = new Map();
+function clientToSvg(e) { const r = svg.getBoundingClientRect(); return V(e.clientX - r.left, e.clientY - r.top); }
+svg.addEventListener('pointerdown', e => {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  const q = clientToSvg(e);
+  pointers.set(e.pointerId, q);
+  if (pointers.size > 1) { drag = { kind: 'pinch' }; return; }
+  let hit = null;
+  for (const h of handles) if (dist(S(h.p), q) < 12) hit = h;
+  drag = { kind: hit ? hit.kind : 'pan', last: q, id: e.pointerId };
+  if (!hit) svg.classList.add('panning');
+  try { svg.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events */ }
+  e.preventDefault();
+});
+svg.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const q = clientToSvg(e);
+  if (drag.kind === 'pinch') {
+    const prev = pointers.get(e.pointerId); if (!prev) return;
+    const other = [...pointers.entries()].find(([id]) => id !== e.pointerId);
+    if (other) {
+      const d0 = dist(prev, other[1]), d1 = dist(q, other[1]);
+      if (d0 > 0) zoomAt(mul(add(q, other[1]), 0.5), d1 / d0);
+    }
+    pointers.set(e.pointerId, q);
+    return;
+  }
+  if (e.pointerId !== drag.id) return;
+  if (drag.kind === 'pan') {
+    view.ox += q.x - drag.last.x; view.oy += q.y - drag.last.y; drag.last = q; update();
+  } else if (drag.kind === 'focus') {
+    const M = Winv(q), g = G, t = dot(sub(M, g.C), g.nl);
+    setSeparationForFocus(clamp(t, 1.05 * g.f, FOCUS_SLIDER_CAP));
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    update();
+  } else if (drag.kind === 'hinge') {
+    // the hinge lies on the line through the lens centre parallel to the film: its signed distance
+    // along the film's up direction sets the lens tilt, alpha = asin(f / J)
+    const M = Winv(q), g = G, Jsigned = dot(sub(M, g.C), g.rear.u);
+    const J = Math.max(Math.abs(Jsigned), g.f);
+    const alpha = Math.asin(g.f / J) / DEG;
+    P.frontTilt = clamp(P.rearTilt + (Jsigned < 0 ? alpha : -alpha), -TILT_MAX, TILT_MAX);
+    P.frontTilt = Math.round(P.frontTilt * 20) / 20;   // finer than the slider step: J is sensitive to the tilt
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    update();
+  }
+});
+const endDrag = e => { pointers.delete(e.pointerId); if (pointers.size === 0) { drag = null; svg.classList.remove('panning'); } };
+svg.addEventListener('pointerup', endDrag);
+svg.addEventListener('pointercancel', endDrag);
+function zoomAt(q, factor) {
+  const k2 = clamp(view.k * factor, 4, 4000), r = k2 / view.k;
+  view.ox = q.x + (view.ox - q.x) * r; view.oy = q.y + (view.oy - q.y) * r; view.k = k2;
+  update();
+}
+let wheelAcc = 0;
+svg.addEventListener('wheel', e => {
+  e.preventDefault();
+  wheelAcc += e.deltaY / (e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1);
+  const n = Math.trunc(wheelAcc); if (!n) return; wheelAcc -= n;
+  const notches = clamp(n, -3, 3) * (e.ctrlKey ? 3 : 1);
+  zoomAt(clientToSvg(e), Math.pow(1 / 1.1, notches));
+}, { passive: false });
+addEventListener('resize', update);
+
+// ----------------------------------------------------------------------------
+// GUI
+// ----------------------------------------------------------------------------
+const FOCUS_SLIDER_CAP = 30;
+const gui = new GUI({ title: 'Settings', width: 310 });
+const R0 = formatRanges();
+const cameraCtrl = gui.add(P, 'camera', ['normal camera', 'view camera']).name('camera');
+const pitchCtrl = new MappedNumberController(gui, P, 'cameraPitch', -45, 45, 0.25, ANGLE_MAP).name('camera pitch ° (+ up)');
+const fL = gui.addFolder('Lens & focus');
+const formatCtrl = fL.add(P, 'format', Object.keys(FORMATS)).name('format');
+fL.add(P, 'orientation', ['landscape', 'portrait']).name('orientation');
+fL.add(P, 'autoLens').name('set lens when changing format');
+const extCtrl = fL.add(P, 'extension', ...R0.extension, 0.1).name('standard separation (mm)').decimals(2);
+const focusCtrl = new MappedNumberController(fL, P, 'focusDist', 0.2, FOCUS_SLIDER_CAP, 0.01, LOG_MAP).name('focus distance (m)').decimals(2);
+const focalCtrl = fL.add(P, 'focal', ...R0.focal, 1).name('focal length (mm)');
+fL.add(P, 'refocusOnFocal').name('keep focus when changing lens');
+const icCtrl = fL.add(P, 'imageCircle', ...R0.imageCircle, 1).name('image circle at ∞ (mm)');
+const riseCtrls = [];
+function applyFormatRanges() {
+  const R = formatRanges();
+  const set = (ctrl, key, [lo, hi]) => { ctrl.min(lo).max(hi); P[key] = clamp(P[key], lo, hi); };
+  set(extCtrl, 'extension', R.extension);
+  set(focalCtrl, 'focal', R.focal);
+  set(icCtrl, 'imageCircle', R.imageCircle);
+  for (const c of riseCtrls) set(c, c.property, [-R.shift, R.shift]);
+}
+fL.add({ hyperfocal: () => {
+  const f = P.focal * MM, coc = circleOfConfusion(FORMATS[P.format][0]).coc * MM;
+  setSeparationForFocus(f * f / (P.fnumber * coc) + f);
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  update();
+} }, 'hyperfocal').name('Focus at hyperfocal distance');
+formatCtrl.onChange(v => {
+  if (P.autoLens) {
+    P.focal = Math.round(Math.hypot(...FORMATS[v]));
+    P.imageCircle = IMAGE_CIRCLE[v];
+    P.extension = separationFor(P.focal, DEFAULT_FOCUS);
+  }
+  applyFormatRanges();
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  update();
+});
+
+const fF = gui.addFolder('Front standard (lens)');
+new MappedNumberController(fF, P, 'frontTilt', -TILT_MAX, TILT_MAX, 0.25, ANGLE_MAP).name('tilt ° (+ top forward)');
+riseCtrls.push(fF.add(P, 'frontRise', -R0.shift, R0.shift, 1).name('rise / fall (mm)'));
+fF.add({ ground: () => {
+  // hinge at ground level: J = lens height (measured along the film), tilt = rear tilt + asin(f / J)
+  const g = geometry(), J = dot(sub(V(g.C.x, 0), g.C), g.rear.u);
+  if (Math.abs(J) > g.f) { P.frontTilt = clamp(P.rearTilt + (J < 0 ? 1 : -1) * Math.asin(g.f / Math.abs(J)) / DEG, -TILT_MAX, TILT_MAX); }
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  update();
+} }, 'ground').name('Tilt for a hinge at ground level');
+const fR = gui.addFolder('Rear standard (film)');
+new MappedNumberController(fR, P, 'rearTilt', -TILT_MAX, TILT_MAX, 0.25, ANGLE_MAP).name('tilt ° (+ top forward)');
+riseCtrls.push(fR.add(P, 'rearRise', -R0.shift, R0.shift, 1).name('rise / fall (mm)'));
+const pivotCtrl = gui.add(P, 'tiltPivot', ['axis', 'base']).name('tilt pivot');
+const resetCtrl = gui.add({ reset: () => { Object.assign(P, ZERO); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); } }, 'reset')
+  .name('Reset movements');
+
+const fD = gui.addFolder('Depth of field');
+fD.add(P, 'fnumber', [1, 1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90]).name('f-number');
+fD.add(P, 'cocMode', ['from print', 'manual']).name('circle of confusion');
+const cocCtrls = { print: [], manual: [] };
+cocCtrls.print.push(
+  fD.add(P, 'printLong', 10, 200, 1).name('print long edge (cm)'),
+  fD.add(P, 'viewDist', 20, 300, 5).name('viewing distance (cm)'),
+  fD.add(P, 'eyeRes', 1000, 3000, 50).name('eye resolves 1/x rad'));
+cocCtrls.manual.push(fD.add(P, 'coc', 0.02, 0.5, 0.005).name('CoC on film (mm)'));
+function applyCocMode() {
+  const m = P.cocMode === 'manual';
+  cocCtrls.print.forEach(c => m ? c.hide() : c.show());
+  cocCtrls.manual.forEach(c => m ? c.show() : c.hide());
+}
+
+const fV = gui.addFolder('Display');
+fV.add(P, 'showSharpArea').name('sharp line in frame');
+fV.add(P, 'showFullPlane').name('extended plane of sharp focus');
+fV.add(P, 'showDof').name('in-focus region in frame');
+fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
+fV.add(P, 'showFov').name('field of view rays');
+fV.add(P, 'showCoverage').name('lens coverage on film');
+fV.add(P, 'showCoverageCone').name('lens coverage cone');
+fV.add(P, 'showHyperfocal').name('hyperfocal distance');
+fV.add(P, 'showPlanes').name('extended film & lens planes');
+const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge');
+fV.add(P, 'showBellows').name('bellows');
+fV.add(P, 'showGround').name('ground');
+fV.add(P, 'showUnderground').name('parts below the ground');
+fV.add(P, 'showGrid').name('grid');
+fV.close();
+const fS = gui.addFolder('Scene');
+fS.add(P, 'cameraHeight', 0.1, 2.5, 0.05).name('lens height (m)');
+fS.add(P, 'background', Object.keys(THEMES)).name('background');
+fS.add({ view: () => { resetView(); update(); } }, 'view').name('Reset view');
+fS.close();
+
+function applyCameraMode() {
+  const isView = P.camera === 'view camera';
+  for (const x of [fF, fR, pivotCtrl, resetCtrl, icCtrl, linesCtrl, pitchCtrl]) isView ? x.show() : x.hide();
+  if (!isView) { Object.assign(P, ZERO); P.cameraPitch = 0; }
+}
+cameraCtrl.onChange(() => { applyCameraMode(); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); });
+applyCameraMode();
+applyCocMode();
+
+// wheel on sliders: one notch = one step (ten with Shift); the focus slider scrolls by 2 % per notch
+function installWheel(ctrl) {
+  let acc = 0;
+  ctrl.$widget.addEventListener('wheel', e => {
+    const onSlider = ctrl.$slider && ctrl.$slider.contains(e.target);
+    const onInput = ctrl.$input.contains(e.target) && ctrl._inputFocused;
+    if (!onSlider && !onInput) return;
+    if (onSlider && Math.abs(e.deltaX) < Math.abs(e.deltaY) && ctrl._hasScrollBar) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    acc += e.deltaY / (e.deltaMode === 0 ? 100 : e.deltaMode === 1 ? 3 : 1);
+    const n = Math.trunc(acc);
+    if (!n) return;
+    acc -= n;
+    const notches = -n * (e.shiftKey ? 10 : 1), v = ctrl.getValue();
+    ctrl._snapClampSetValue(ctrl.wheelFn ? ctrl.wheelFn(v, notches) : v + notches * ctrl._step);
+    ctrl._callOnFinishChange();
+  }, { capture: true, passive: false });
+}
+focusCtrl.wheelFn = (v, n) => v * Math.pow(1.02, n);
+gui.controllersRecursive().forEach(c => { if (c instanceof NumberController) installWheel(c); });
+
+gui.onChange(e => {
+  if (e.controller === focusCtrl) { setSeparationForFocus(e.value); extCtrl.updateDisplay(); }
+  if (e.controller === focalCtrl && P.refocusOnFocal) { setSeparationForFocus(P.focusDist); extCtrl.updateDisplay(); }
+  if (e.property === 'cocMode') applyCocMode();
+  update();
+  if (e.controller !== focusCtrl && G && Number.isFinite(G.dObj)) { P.focusDist = Math.min(FOCUS_SLIDER_CAP, G.dObj); focusCtrl.updateDisplay(); }
+});
+document.getElementById('infoTitle').addEventListener('click', () => document.getElementById('info').classList.toggle('closed'));
+if (matchMedia('(max-width: 700px)').matches) { gui.close(); document.getElementById('info').classList.add('closed'); }   // phones: start with the drawing
+
+resetView();
+update();
+</script>
+</body>
+</html>

@@ -22,9 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          mkdir -p site/3D
+          mkdir -p site/3D site/2D
           cp index.html site/
           cp 3D/index.html site/3D/
+          cp 2D/index.html site/2D/
           mkdir -p site/tools && cp tools/index.html tools/optics.js site/tools/
       - uses: actions/upload-pages-artifact@v3
         with:
