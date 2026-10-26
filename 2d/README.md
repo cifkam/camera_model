@@ -8,7 +8,7 @@ the numbers in the legend.
 
 ## Run
 
-Open `2D/index.html` in a browser. It is a single file; the lil-gui control panel is loaded from
+Open `2d/index.html` in a browser. It is a single file; the lil-gui control panel is loaded from
 the jsDelivr CDN (the same copy the 3D page uses), so the first load needs network access.
 No build step, no WebGL: the drawing is SVG.
 

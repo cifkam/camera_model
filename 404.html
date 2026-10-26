@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo tools</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #1c1e22; color: #e6e6e6; font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 20px; }
+  a { color: #4fa8ff; }
+</style>
+<script>
+  // GitHub Pages serves this page for any unknown path. Paths are case-sensitive there, so
+  // /2d or /3d (or /Calculators) would fail: map the first segment after the site root onto the
+  // real directory names, ignoring case, and go there.
+  (function () {
+    var dirs = ['3d', '2d', 'calculators'];
+    var parts = location.pathname.split('/').filter(Boolean);
+    var root = parts.length && parts[0].toLowerCase() === 'photo_tools' ? 1 : 0;   // project site prefix
+    var seg = parts[root] || '';
+    for (var i = 0; i < dirs.length; i++) {
+      if (seg.toLowerCase() === dirs[i].toLowerCase() && seg !== dirs[i]) {
+        var rest = parts.slice(root + 1).join('/');
+        location.replace('/' + parts.slice(0, root).concat([dirs[i]]).join('/') + '/' + rest + location.search + location.hash);
+        return;
+      }
+    }
+  })();
+</script>
+</head>
+<body>
+<main>
+  <h1>Page not found</h1>
+  <p>Nothing lives at this address. The tools are listed on the <a href="/photo_tools/">start page</a>:
+     the <a href="/photo_tools/3d/">3D camera model</a>, the <a href="/photo_tools/2d/">2D side view</a> and the
+     <a href="/photo_tools/calculators/">calculators &amp; tables</a>.</p>
+</main>
+</body>
+</html>

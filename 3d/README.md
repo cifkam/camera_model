@@ -6,7 +6,7 @@ and the plane of sharp focus that results from focusing, tilt, swing, rise/fall 
 
 ## Run
 
-Open `3D/index.html` in a browser (double-click, or `firefox 3D/index.html`). It is a single file;
+Open `3d/index.html` in a browser (double-click, or `firefox 3d/index.html`). It is a single file;
 Three.js and the lil-gui control panel are loaded from the jsDelivr CDN, so the first load
 needs network access. No build step.
 
