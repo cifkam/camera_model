@@ -25,7 +25,7 @@ jobs:
           mkdir -p site/3D
           cp index.html site/
           cp 3D/index.html site/3D/
-          if [ -d tools ]; then mkdir -p site/tools && cp tools/index.html tools/optics.js site/tools/; fi
+          mkdir -p site/tools && cp tools/index.html tools/optics.js site/tools/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

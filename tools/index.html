@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo tools</title>
+<style>
+  :root { color-scheme: dark; --bg: #1c1e22; --panel: #26282e; --panel2: #31343b; --text: #f2f3f5; --muted: #b8bec8;
+          --accent: #4fa8ff; --cyan: #3ee6ff; --yellow: #ffd84f; --green: #4fe07a; --border: #555; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header a { color: var(--muted); margin-left: auto; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
+  nav button.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  main { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 16px; padding: 16px; align-items: start; }
+  /* the settings column stays on screen while the tool scrolls; if it is taller than the window it scrolls by itself */
+  aside { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; padding: 12px; } aside { position: static; max-height: none; overflow: visible; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .card h3 { font-size: 14px; margin: 14px 0 8px; color: var(--text); }
+  .field { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 10px; margin: 8px 0; }
+  .field .val { display: flex; align-items: center; gap: 5px; }
+  .field input[type=number] { width: 78px; background: var(--panel2); color: var(--accent); border: 1px solid var(--border);
+                              border-radius: 4px; padding: 4px 6px; font: inherit; text-align: right; }
+  .field select, .field input[type=checkbox] { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; font: inherit; }
+  .field input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0 0 2px; }
+  .unit { color: var(--muted); min-width: 26px; }
+  .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; table-layout: fixed; }   /* fixed: equal columns, widths do not follow the content */
+  table.hf { min-width: 680px; } table.dof { min-width: 1070px; font-size: 13px; }
+  th:first-child { width: 128px; }
+  th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid #474b53; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  th:first-child, td:first-child { text-align: left; color: var(--muted); }
+  th { color: var(--muted); font-weight: 500; }
+  .hl { background: rgba(79, 168, 255, .16); }
+  .hl2 { background: rgba(79, 168, 255, .45); color: #fff; }   /* current row ∩ current column; no bold, it would widen the column */
+  .tablewrap { overflow-x: auto; }
+  .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .stat { background: var(--panel2); border-radius: 6px; padding: 8px 10px; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat .v.pair { font-size: 16px; }
+  svg { width: 100%; height: auto; display: block; touch-action: none; user-select: none; cursor: ew-resize; }
+  svg text { fill: var(--text); font-size: 13px; }   /* was var(--muted) */   /* the viewBox is sized in pixels, so this is the real size on screen */
+  svg .axis { stroke: #9096a0; }
+  svg .grid { stroke: #474b53; }
+  @media print { header nav, header a, aside { display: none; } body { background: #fff; color: #000; } .card { border-color: #999; background: #fff; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Photo tools</h1>
+  <nav id="nav"></nav>
+  <a href="../3D/">3D camera model</a> <a href="../" style="margin-left: 12px">all tools</a>
+</header>
+<main>
+  <aside id="shared"></aside>
+  <section id="tool"></section>
+</main>
+<script src="optics.js"></script>
+<script>
+'use strict';
+const O = Optics;
+
+// ---------------------------------------------------------------------------
+// Shared state: camera settings used by every tool. Persisted per browser.
+// ---------------------------------------------------------------------------
+const S = {
+  format: '35 mm', autoLens: true, focal: 50, fnumber: 11,
+  cocMode: 'print', printLong: 40, viewDist: 50, eyeRes: 1500, coc: 0.1,
+  focus: 3,           // m, used by the DoF tools
+  chartMin: 0.3, chartMax: 100,   // m, distance axes of the DoF charts
+  tool: 'dof',
+};
+try { Object.assign(S, JSON.parse(localStorage.getItem('phototools') || '{}')); } catch (e) { /* storage unavailable: keep defaults */ }
+function save() { try { localStorage.setItem('phototools', JSON.stringify(S)); } catch (e) { /* ignore */ } }
+
+function cocInfo() {
+  return S.cocMode === 'manual' ? { coc: S.coc, enlargement: NaN, printBlur: NaN }
+                                : O.cocFromPrint(S.format, S.printLong, S.viewDist, S.eyeRes);
+}
+const fmt = (x, d = 2) => Number.isFinite(x) ? x.toFixed(d) : (x === Infinity ? '∞' : '–');
+const fmtM = m => !Number.isFinite(m) ? (m === Infinity ? '∞' : '–') : m >= 100 ? m.toFixed(0) : m >= 10 ? m.toFixed(1) : m.toFixed(2);   // metres, no unit (tables)
+const fmtDist = m => !Number.isFinite(m) ? (m === Infinity ? '∞' : '–') : m >= 100 ? m.toFixed(0) + '\u00a0m' : m >= 10 ? m.toFixed(1) + '\u00a0m' : m >= 0.995 ? m.toFixed(2) + '\u00a0m' : (m * 100).toFixed(0) + '\u00a0cm';   // 0.995 would round to 100 cm, show it as 1.00 m
+
+// ---------------------------------------------------------------------------
+// Tiny DOM helpers
+// ---------------------------------------------------------------------------
+function h(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of children.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
+  return e;
+}
+const svgEl = (tag, attrs = {}, ...children) => {
+  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  for (const c of children.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
+  return e;
+};
+
+// number input + slider bound to S[key]; log sliders for distances and focal lengths
+const fields = {};   // key -> { set(v) } so tools (e.g. a dragged plot) can push values into the inputs
+function numField({ label, key, min, max, step, unit = '', log = false, decimals = 0, onChange = update }) {
+  const toSlider = v => log ? 1000 * (Math.log(v) - Math.log(min)) / (Math.log(max) - Math.log(min)) : 1000 * (v - min) / (max - min);
+  const fromSlider = t => {
+    const v = log ? Math.exp(Math.log(min) + t / 1000 * (Math.log(max) - Math.log(min))) : min + t / 1000 * (max - min);
+    return +(Math.round(v / step) * step).toFixed(decimals);
+  };
+  const num = h('input', { type: 'number', value: S[key], min, max, step });
+  const range = h('input', { type: 'range', min: 0, max: 1000, value: toSlider(S[key]) });
+  num.addEventListener('input', () => { const v = parseFloat(num.value); if (Number.isFinite(v)) { S[key] = Math.min(max, Math.max(min, v)); range.value = toSlider(S[key]); onChange(); } });
+  range.addEventListener('input', () => { S[key] = fromSlider(+range.value); num.value = S[key]; onChange(); });
+  fields[key] = { set(v) { S[key] = v; num.value = +v.toFixed(decimals); range.value = toSlider(v); } };
+  return h('div', { class: 'field' }, h('label', {}, label), h('div', { class: 'val' }, num, h('span', { class: 'unit' }, unit)), range);
+}
+// two number inputs "from … to …" bound to S[keyMin], S[keyMax]; keeps min < max
+function rangeField({ label, keyMin, keyMax, min, max, unit = '', onChange = update }) {
+  const a = h('input', { type: 'number', value: S[keyMin], min, max, step: 'any' });
+  const b = h('input', { type: 'number', value: S[keyMax], min, max, step: 'any' });
+  const commit = () => {
+    let lo = parseFloat(a.value), hi = parseFloat(b.value);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+    lo = Math.min(max, Math.max(min, lo)); hi = Math.min(max, Math.max(min, hi));
+    if (hi < lo * 1.5) { if (document.activeElement === a) hi = Math.min(max, lo * 1.5); else lo = Math.max(min, hi / 1.5); }
+    S[keyMin] = lo; S[keyMax] = hi; a.value = lo; b.value = hi; onChange();
+  };
+  a.addEventListener('change', commit); b.addEventListener('change', commit);
+  return h('div', { class: 'field' }, h('label', {}, label),
+    h('div', { class: 'val' }, a, h('span', { class: 'unit' }, '–'), b, h('span', { class: 'unit' }, unit)));
+}
+function selectField({ label, key, options, onChange = update }) {
+  const sel = h('select', { onchange: () => { S[key] = isNaN(+sel.value) ? sel.value : +sel.value; onChange(); } },
+    options.map(o => h('option', { value: o, selected: String(o) === String(S[key]) }, String(o))));
+  return h('div', { class: 'field' }, h('label', {}, label), sel);
+}
+function checkField({ label, key, onChange = update }) {
+  const cb = h('input', { type: 'checkbox', checked: !!S[key], onchange: () => { S[key] = cb.checked; onChange(); } });
+  return h('div', { class: 'field' }, h('label', {}, label), cb);
+}
+
+// ---------------------------------------------------------------------------
+// Shared camera panel
+// ---------------------------------------------------------------------------
+function renderShared() {
+  const root = document.getElementById('shared');
+  root.replaceChildren();
+  const cam = h('div', { class: 'card' }, h('h2', {}, 'Camera'));
+  cam.append(selectField({ label: 'format', key: 'format', options: Object.keys(O.FORMATS), onChange: () => {
+    if (S.autoLens) { S.focal = Math.round(O.diagonal(S.format)); fields.focal.set(S.focal); }
+    update();
+  } }));
+  cam.append(checkField({ label: 'set lens when changing format', key: 'autoLens' }));
+  cam.append(numField({ label: 'focal length', key: 'focal', min: 4, max: 800, step: 1, unit: 'mm', log: true }));
+  cam.append(selectField({ label: 'f-number', key: 'fnumber', options: O.APERTURES }));
+  root.append(cam);
+
+  const coc = h('div', { class: 'card' }, h('h2', {}, 'Circle of confusion'));
+  coc.append(selectField({ label: 'circle of confusion', key: 'cocMode', options: ['print', 'manual'], onChange: () => { renderShared(); update(); } }));
+  if (S.cocMode === 'print') {
+    coc.append(numField({ label: 'print long edge', key: 'printLong', min: 10, max: 200, step: 1, unit: 'cm' }));
+    coc.append(numField({ label: 'viewing distance', key: 'viewDist', min: 20, max: 300, step: 5, unit: 'cm' }));
+    coc.append(numField({ label: 'eye resolves 1/x rad', key: 'eyeRes', min: 1000, max: 3500, step: 50, unit: '' }));
+  } else {
+    coc.append(numField({ label: 'CoC on film', key: 'coc', min: 0.005, max: 0.5, step: 0.005, unit: 'mm', decimals: 3 }));
+  }
+  coc.append(h('p', { class: 'note', id: 'cocNote' }));
+  root.append(coc);
+}
+
+// ---------------------------------------------------------------------------
+// SVG plot helpers
+// ---------------------------------------------------------------------------
+// log-axis ticks within [lo, hi]: 1-2-5 per decade, finer (1-1.5-2-3-5-7) when the range is narrow
+function logTicks(lo, hi, maxN = 16) {
+  const gen = steps => { const out = []; for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+    for (const m of steps) { const v = +(m * 10 ** e).toPrecision(3); if (v >= lo * 0.999 && v <= hi * 1.001) out.push(v); } return out; };
+  const fine = gen([1, 1.5, 2, 3, 5, 7]);
+  if (fine.length > maxN) { const coarse = gen([1, 2, 5]); return coarse.length > maxN ? gen([1]) : coarse; }
+  return fine.length < 5 ? gen([1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8, 9]) : fine;
+}
+// charts are drawn in CSS pixels: the viewBox matches the container width, so text keeps its size on a phone
+// The containers are watched: when their width changes (window resize, or the scrollbar that appears once
+// the charts make the page tall), the tool is redrawn, so the first click never changes the chart size.
+const chartObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(entries => {
+  if (entries.some(e => e.target._drawnW && e.target._drawnW !== chartWidth(e.target))) tools[S.tool].update();
+}) : null;
+function chartWidth(container) {
+  const w = Math.max(300, container.clientWidth || 720);
+  if (chartObserver && !container._observed) { container._observed = true; chartObserver.observe(container); }
+  container._drawnW = w;
+  return w;
+}
+const tickLabel = v => v >= 1 ? String(v) : v >= 0.1 ? v.toFixed(v * 10 % 1 ? 2 : 1) : v.toFixed(2);
+function svgPoint(svg, evt) {   // client -> SVG user coordinates
+  const p = svg.createSVGPoint(); p.x = evt.clientX; p.y = evt.clientY;
+  return p.matrixTransform(svg.getScreenCTM().inverse());
+}
+// Drag anywhere over a chart: onDrag(x, y) in the SVG's user coordinates, fired on press and on
+// every move while the button is held. The listeners sit on the container, which survives the
+// redraws (each update replaces the <svg>); only the callback is refreshed per draw.
+function makeDraggable(container, onDrag) {
+  container._onDrag = onDrag;
+  if (container._dragBound) return;
+  container._dragBound = true;
+  let active = false;
+  const fire = e => { const svg = container.querySelector('svg'); if (svg) { const p = svgPoint(svg, e); container._onDrag(p.x, p.y); } };
+  container.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    active = true; fire(e); e.preventDefault();
+    try { container.setPointerCapture(e.pointerId); } catch (err) { /* keeps working without capture */ }
+  });
+  container.addEventListener('pointermove', e => { if (active) fire(e); });
+  const end = () => { active = false; };
+  container.addEventListener('pointerup', end);
+  container.addEventListener('pointercancel', end);
+}
+
+// ---------------------------------------------------------------------------
+// Tool: depth of field
+// ---------------------------------------------------------------------------
+const tools = {};
+
+tools.dof = {
+  title: 'Depth of field',
+  render(root) {
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Focus'),
+      numField({ label: 'focus distance (from the lens)', key: 'focus', min: 0.2, max: 1000, step: 0.01, unit: 'm', log: true, decimals: 2 }),
+      rangeField({ label: 'distance axis of the charts', keyMin: 'chartMin', keyMax: 'chartMax', min: 0.05, max: 10000, unit: 'm' }),
+      h('p', { class: 'note' }, 'Drag the marker in the charts to change the focus distance. Narrow the axis range to zoom into the part you care about.')));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'dofStats' })));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Sharp range'), h('div', { id: 'dofBar' }),
+      h('p', { class: 'note' }, 'Logarithmic distance axis with ∞ after the break. H marks the hyperfocal distance; focused there, the sharp range runs from H/2 to ∞.')));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Near and far limits vs focus distance'), h('div', { id: 'dofCurves' }),
+      h('p', { class: 'note' }, 'One pair of curves per aperture, the current aperture highlighted. Curves leaving through the top edge continue beyond the axis range or go to infinity.')));
+  },
+  update() {
+    const f = S.focal, N = S.fnumber, c = cocInfo().coc, s = S.focus * 1000;
+    const r = O.dof(f, N, c, s);
+    const m2 = mm => mm / 1000;
+    const stat = (k, v, cls = 'v') => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: cls }, v));
+    document.getElementById('dofStats').replaceChildren(
+      stat('near limit', fmtDist(m2(r.near))), stat('far limit', fmtDist(m2(r.far))), stat('total depth', fmtDist(m2(r.total))),
+      stat('in front / behind', Number.isFinite(r.behind) ? `${fmtDist(m2(r.front))} / ${fmtDist(m2(r.behind))}` : `${fmtDist(m2(r.front))} / ∞`, 'v pair'),
+      stat('hyperfocal distance', fmtDist(m2(r.H))), stat('magnification', Number.isFinite(r.mag) ? '1:' + (1 / r.mag).toFixed(r.mag > 0.2 ? 1 : 0) : '–'));
+    drawDofBar(document.getElementById('dofBar'), r);
+    drawDofCurves(document.getElementById('dofCurves'), f, c);
+  },
+};
+
+function drawDofBar(container, r) {
+  // log distance axis from 0.2 m to 1000 m, then an axis break and ∞ at the right end
+  const W = chartWidth(container), Hh = 138, x0 = 34, xInf = W - 24, x1 = xInf - 34, dmin = S.chartMin, dmax = S.chartMax, yAxis = 78;   // rows below the axis: ticks, H label, axis title
+  const X = d => d === Infinity ? xInf : x0 + (x1 - x0) * (Math.log(Math.min(dmax, Math.max(dmin, d))) - Math.log(dmin)) / (Math.log(dmax) - Math.log(dmin));
+  const Dinv = x => Math.exp(Math.log(dmin) + (Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * (Math.log(dmax) - Math.log(dmin)));
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  svg.append(svgEl('line', { x1: x0, x2: x1 + 8, y1: yAxis, y2: yAxis, class: 'axis' }));
+  svg.append(svgEl('line', { x1: x1 + 20, x2: xInf, y1: yAxis, y2: yAxis, class: 'axis' }));
+  svg.append(svgEl('path', { d: `M${x1 + 9},${yAxis + 5} L${x1 + 14},${yAxis - 5} M${x1 + 15},${yAxis + 5} L${x1 + 20},${yAxis - 5}`, class: 'axis', fill: 'none' }));
+  for (const d of logTicks(dmin, dmax, Math.floor((x1 - x0) / 36)).concat([Infinity])) {
+    const x = X(d);
+    svg.append(svgEl('line', { x1: x, x2: x, y1: yAxis - 4, y2: yAxis + 4, class: 'axis' }));
+    svg.append(svgEl('text', { x, y: yAxis + 16, 'text-anchor': 'middle' }, d === Infinity ? '∞' : tickLabel(d)));
+  }
+  svg.append(svgEl('text', { x: x0, y: Hh - 6 }, 'distance from the lens (m)'));
+  const near = r.near / 1000, far = r.far / 1000, s = S.focus, H = r.H / 1000;
+  if (Number.isFinite(near)) {
+    const xa = X(near), xb = X(far);
+    svg.append(svgEl('rect', { x: xa, y: yAxis - 30, width: Math.max(1, xb - xa), height: 24, fill: '#3ee6ff', 'fill-opacity': .35, stroke: '#3ee6ff' }));
+    svg.append(svgEl('text', { x: xa, y: yAxis - 36, 'text-anchor': 'end', fill: '#3ee6ff' }, fmtDist(near) + ' '));
+    svg.append(svgEl('text', { x: xb, y: yAxis - 36, 'text-anchor': 'start', fill: '#3ee6ff' }, ' ' + fmtDist(far)));
+  }
+  if (H >= dmin && H <= dmax) {   // hyperfocal mark, only when it is inside the axis range
+    const xh = X(H);
+    svg.append(svgEl('path', { d: `M${xh - 5},${yAxis + 4} L${xh + 5},${yAxis + 4} L${xh},${yAxis - 3} Z`, fill: '#ffd84f' }));
+    svg.append(svgEl('text', { x: xh, y: yAxis + 30, 'text-anchor': 'middle', fill: '#ffd84f' }, 'H ' + fmtDist(H)));
+  }
+  const xs = X(s);
+  svg.append(svgEl('line', { x1: xs, x2: xs, y1: yAxis - 52, y2: yAxis + 4, stroke: '#4fe07a', 'stroke-width': 2 }));
+  svg.append(svgEl('circle', { cx: xs, cy: yAxis - 52, r: 5, fill: '#4fe07a', style: 'cursor: ew-resize' }));
+  svg.append(svgEl('text', { x: xs, y: yAxis - 62, 'text-anchor': 'middle', fill: '#4fe07a' }, 'focus ' + fmtDist(s)));
+  container.replaceChildren(svg);
+  makeDraggable(container, x => setFocus(Dinv(x)));
+}
+
+function drawDofCurves(container, f, c) {
+  const W = chartWidth(container), Hh = Math.round(Math.min(640, Math.max(300, W * 0.7))), x0 = 48, x1 = W - 12, y0 = 16, y1 = Hh - 40;
+  const sMin = S.chartMin, sMax = S.chartMax, dMin = S.chartMin, dMax = Math.min(10000, S.chartMax * 10);   // m
+  const X = s => x0 + (x1 - x0) * (Math.log(s) - Math.log(sMin)) / (Math.log(sMax) - Math.log(sMin));
+  const Y = d => y1 - (y1 - y0) * (Math.log(d) - Math.log(dMin)) / (Math.log(dMax) - Math.log(dMin));
+  const Sinv = x => Math.exp(Math.log(sMin) + (x - x0) / (x1 - x0) * (Math.log(sMax) - Math.log(sMin)));
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  for (const d of logTicks(dMin, dMax, Math.floor((y1 - y0) / 20))) {
+    svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(d), y2: Y(d), class: 'grid' }));
+    svg.append(svgEl('text', { x: x0 - 4, y: Y(d) + 4, 'text-anchor': 'end' }, tickLabel(d)));
+  }
+  for (const s of logTicks(sMin, sMax, Math.floor((x1 - x0) / 36))) {
+    svg.append(svgEl('line', { x1: X(s), x2: X(s), y1: y0, y2: y1, class: 'grid' }));
+    svg.append(svgEl('text', { x: X(s), y: y1 + 14, 'text-anchor': 'middle' }, tickLabel(s)));
+  }
+  svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'focus distance (m)'));
+  svg.append(svgEl('text', { x: x0 + 4, y: y0 + 10 }, 'near / far limit (m)'));
+  svg.append(svgEl('line', { x1: x0, x2: x1, y1: y0, y2: y0, class: 'axis' }));
+  // the 1:1 line (subject distance itself)
+  svg.append(svgEl('line', { x1: X(sMin), y1: Y(sMin), x2: X(sMax), y2: Y(sMax), stroke: '#4fe07a', 'stroke-opacity': .7, 'stroke-dasharray': '3 3' }));
+  const apertures = O.APERTURES.filter(N => N >= 2.8 && N <= 64);
+  for (const N of apertures) {
+    const cur = N === S.fnumber;
+    // sample densely in log s, and add the exact focus distance where the far limit reaches the
+    // top edge (far = dMax), so the steep part near the hyperfocal distance is not cut into chords
+    const n = 600, samples = [];
+    for (let i = 0; i <= n; i++) samples.push(Math.exp(Math.log(sMin) + i / n * (Math.log(sMax) - Math.log(sMin))));
+    const { H } = O.dof(f, N, c, sMax * 1000), sTop = (dMax * 1000) * H / (H - f + dMax * 1000) / 1000;
+    if (sTop > sMin && sTop < sMax) samples.push(sTop);
+    samples.sort((a, b) => a - b);
+    let dn = '', df = '';
+    samples.forEach((s, i) => {
+      const r = O.dof(f, N, c, s * 1000);
+      dn += (i ? 'L' : 'M') + X(s).toFixed(2) + ',' + Y(Math.max(dMin, r.near / 1000)).toFixed(2);
+      const far = r.far === Infinity ? dMax : Math.min(dMax, r.far / 1000);
+      df += (i ? 'L' : 'M') + X(s).toFixed(2) + ',' + Y(far).toFixed(2);
+    });
+    const style = { fill: 'none', stroke: cur ? '#3ee6ff' : '#7d8390', 'stroke-width': cur ? 2.2 : 1, 'stroke-linejoin': 'round' };
+    svg.append(svgEl('path', { d: dn, ...style }), svgEl('path', { d: df, ...style }));
+    // labels only where they stay legible: the current aperture and the two extremes, on the near curve
+    if (cur || N === apertures[0] || N === apertures[apertures.length - 1]) {
+      const rEnd = O.dof(f, N, c, sMax * 1000);
+      if (rEnd.near / 1000 >= dMin)   // a curve that runs below the axis range gets no label (they would pile up on the bottom edge)
+      svg.append(svgEl('text', { x: x1 - 2, y: Y(Math.max(dMin, rEnd.near / 1000)) + (N === apertures[0] ? -3 : 11), 'text-anchor': 'end', fill: cur ? '#3ee6ff' : '#b8bec8' }, 'f/' + N));
+    }
+  }
+  const s = Math.min(sMax, Math.max(sMin, S.focus)), r = O.dof(f, S.fnumber, c, S.focus * 1000);
+  svg.append(svgEl('line', { x1: X(s), x2: X(s), y1: y0, y2: y1, stroke: '#4fe07a', 'stroke-width': 1.5 }));
+  for (const d of [r.near / 1000, r.far === Infinity ? dMax : r.far / 1000]) if (d >= dMin)
+    svg.append(svgEl('circle', { cx: X(s), cy: Y(Math.min(dMax, d)), r: 3, fill: '#4fe07a' }));
+  container.replaceChildren(svg);
+  makeDraggable(container, x => setFocus(Sinv(Math.min(x1, Math.max(x0, x)))));
+}
+
+function setFocus(m) {
+  const v = Math.min(1000, Math.max(0.2, +m.toFixed(2)));
+  if (fields.focus) fields.focus.set(v); else S.focus = v;
+  update();
+}
+
+// ---------------------------------------------------------------------------
+// Tool: hyperfocal table
+// ---------------------------------------------------------------------------
+const FOCALS = [20, 24, 28, 35, 50, 65, 75, 90, 105, 120, 135, 150, 180, 210, 240, 300, 360, 450];
+tools.hyperfocal = {
+  title: 'Hyperfocal table',
+  render(root) {
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Hyperfocal distance (m) by focal length and aperture'),
+      h('div', { class: 'tablewrap', id: 'hfTable' }),
+      h('p', { class: 'note' }, 'Focus at H and everything from H/2 to ∞ is acceptably sharp. Measured from the lens, for the circle of confusion in the side panel. The current focal length and aperture are highlighted.')));
+  },
+  update() {
+    const c = cocInfo().coc, aps = O.APERTURES.filter(N => N >= 2.8 && N <= 64);
+    // the current lens is inserted into the list at its place; when it coincides with a listed value
+    // that row is made twice as tall, so the rows below it stay where they are
+    const listed = FOCALS.includes(S.focal);
+    const focals = listed ? FOCALS : [...FOCALS, S.focal].sort((a, b) => a - b);
+    const table = h('table', { class: 'hf' }, h('thead', {}, h('tr', {}, h('th', {}, 'f (mm) \\ f-number'), aps.map(N => h('th', { class: N === S.fnumber ? 'hl' : '' }, 'f/' + N)))),
+      h('tbody', {}, focals.map(f => h('tr', { class: listed && f === S.focal ? 'tall' : '' }, h('td', { class: f === S.focal ? 'hl' : '' }, String(f)),
+        aps.map(N => h('td', { class: f === S.focal && N === S.fnumber ? 'hl2' : (N === S.fnumber || f === S.focal) ? 'hl' : '' }, fmtDist(O.hyperfocal(f, N, c) / 1000)))))));
+    document.getElementById('hfTable').replaceChildren(table);
+    const tall = table.querySelector('tr.tall');
+    if (tall) { const other = table.tBodies[0].rows[tall.rowIndex === 1 ? 2 : 1]; tall.style.height = 2 * other.getBoundingClientRect().height + 'px'; }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: DoF table for the current lens
+// ---------------------------------------------------------------------------
+const TABLE_DISTANCES = [0.5, 0.7, 1, 1.5, 2, 3, 4, 5, 7, 10, 15, 20, 30, 50, 100];
+tools.table = {
+  title: 'DoF table',
+  render(root) {
+    root.append(h('div', { class: 'card' }, h('h2', { id: 'tblTitle' }), h('div', { class: 'tablewrap', id: 'dofTable' }),
+      h('p', { class: 'note' }, 'Near – far limits in metres by focus distance and aperture, for the lens and circle of confusion in the side panel. The current aperture and the row nearest to the focus distance are highlighted.')));
+  },
+  update() {
+    const f = S.focal, c = cocInfo().coc, aps = O.APERTURES.filter(N => N >= 2.8 && N <= 64);
+    document.getElementById('tblTitle').textContent = `Depth of field, ${f} mm lens, CoC ${fmt(c, 3)} mm`;
+    const rowHl = TABLE_DISTANCES.reduce((a, b) => Math.abs(Math.log(b / S.focus)) < Math.abs(Math.log(a / S.focus)) ? b : a);
+    const cell = (N, s) => { const r = O.dof(f, N, c, s * 1000); return Number.isFinite(r.near) ? `${fmtM(r.near / 1000)}\u00a0–\u00a0${fmtM(r.far / 1000)}` : '–'; };
+    const table = h('table', { class: 'dof' }, h('thead', {}, h('tr', {}, h('th', {}, 'focus (m) \\ f-number'), aps.map(N => h('th', { class: N === S.fnumber ? 'hl' : '' }, 'f/' + N)))),
+      h('tbody', {}, TABLE_DISTANCES.map(s => h('tr', {}, h('td', { class: s === rowHl ? 'hl' : '' }, String(s)),
+        aps.map(N => h('td', { class: s === rowHl && N === S.fnumber ? 'hl2' : (N === S.fnumber || s === rowHl) ? 'hl' : '' }, cell(N, s)))))));
+    document.getElementById('dofTable').replaceChildren(table);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// App shell
+// ---------------------------------------------------------------------------
+function renderNav() {
+  const nav = document.getElementById('nav');
+  nav.replaceChildren(...Object.entries(tools).map(([id, t]) =>
+    h('button', { class: id === S.tool ? 'active' : '', onclick: () => { S.tool = id; renderNav(); renderTool(); } }, t.title)));
+}
+function renderTool() {
+  const root = document.getElementById('tool');
+  root.replaceChildren();
+  tools[S.tool].render(root);
+  update();
+}
+function update() {
+  const ci = cocInfo();
+  const note = document.getElementById('cocNote');
+  if (note) note.textContent = S.cocMode === 'manual' ? `CoC ${fmt(ci.coc, 3)} mm on film`
+    : `CoC ${fmt(ci.coc, 3)} mm on film (${fmt(ci.printBlur, 2)} mm on the print, ${fmt(ci.enlargement, 1)}× enlargement)`;
+  tools[S.tool].update();
+  save();
+}
+if (!chartObserver) window.addEventListener('resize', () => tools[S.tool].update());   // fallback: charts are drawn in pixels
+if (!tools[S.tool]) S.tool = 'dof';
+renderShared();
+renderNav();
+renderTool();
+</script>
+</body>
+</html>
