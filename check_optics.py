@@ -1,4 +1,4 @@
-"""Independent numeric cross-check of the optics used in index.html.
+"""Independent numeric cross-check of the optics used in 3D/index.html (and tools/optics.js).
 
 The page computes the plane of sharp focus (PoSF) by pushing the film plane
 through the thin-lens projective map  (x, y, z, 1) -> (f x, f y, f z, z + f)
@@ -29,7 +29,7 @@ def rot_y(a):
 
 
 def plane_of_sharp_focus(Cl, Rl, Cr, Rr, f):
-    """Plane (n, d) with n.p + d = 0, in world coords. Same algebra as index.html."""
+    """Plane (n, d) with n.p + d = 0, in world coords. Same algebra as 3D/index.html."""
     u, v, n = Rl[:, 0], Rl[:, 1], Rl[:, 2]
     nr = Rr[:, 2]
     rel = Cr - Cl
@@ -113,7 +113,7 @@ ok2 = check(abs(z_focus - (s + f * s / (s - f))) < 1e-12 and abs(n[0]) < 1e-12 a
 
 # --- depth of field -----------------------------------------------------------
 def focus_interval(film_n, film_d, f, k, r):
-    """In-focus [t_near, t_far] along unit ray r from the lens centre (lens coords). Same as index.html."""
+    """In-focus [t_near, t_far] along unit ray r from the lens centre (lens coords). Same as 3D/index.html."""
     nr = film_n @ r
     alpha, beta = film_d * r[2] / (f * nr), -film_d / nr
     w0, w1 = sorted([(1 - k - alpha) / beta, (1 + k - alpha) / beta])

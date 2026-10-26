@@ -21,7 +21,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir site && cp index.html site/
+      - run: |
+          mkdir -p site/3D
+          cp index.html site/
+          cp 3D/index.html site/3D/
+          if [ -d tools ]; then mkdir -p site/tools && cp tools/index.html tools/optics.js site/tools/; fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
