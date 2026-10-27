@@ -135,8 +135,8 @@ function numField({ label, key, min, max, step, unit = '', log = false, decimals
     const v = log ? Math.exp(Math.log(min) + t / 1000 * (Math.log(max) - Math.log(min))) : min + t / 1000 * (max - min);
     return +(Math.round(v / step) * step).toFixed(decimals);
   };
-  const num = h('input', { type: 'number', value: S[key], min, max, step });
-  const range = h('input', { type: 'range', min: 0, max: 1000, value: toSlider(S[key]) });
+  const num = h('input', { type: 'number', value: S[key], min, max, step, 'data-key': key });
+  const range = h('input', { type: 'range', min: 0, max: 1000, value: toSlider(S[key]), 'data-key': key + ':range' });
   num.addEventListener('input', () => { const v = parseFloat(num.value); if (Number.isFinite(v)) { S[key] = Math.min(max, Math.max(min, v)); range.value = toSlider(S[key]); onChange(); } });
   range.addEventListener('input', () => { S[key] = fromSlider(+range.value); num.value = S[key]; onChange(); });
   fields[key] = { set(v) { S[key] = v; num.value = +v.toFixed(decimals); range.value = toSlider(v); } };
@@ -158,12 +158,12 @@ function rangeField({ label, keyMin, keyMax, min, max, unit = '', onChange = upd
     h('div', { class: 'val' }, a, h('span', { class: 'unit' }, '–'), b, h('span', { class: 'unit' }, unit)));
 }
 function selectField({ label, key, options, onChange = update }) {
-  const sel = h('select', { onchange: () => { S[key] = isNaN(+sel.value) ? sel.value : +sel.value; onChange(); } },
+  const sel = h('select', { 'data-key': key, onchange: () => { S[key] = isNaN(+sel.value) ? sel.value : +sel.value; onChange(); } },
     options.map(o => h('option', { value: o, selected: String(o) === String(S[key]) }, String(o))));
   return h('div', { class: 'field' }, h('label', {}, label), sel);
 }
 function checkField({ label, key, onChange = update }) {
-  const cb = h('input', { type: 'checkbox', checked: !!S[key], onchange: () => { S[key] = cb.checked; onChange(); } });
+  const cb = h('input', { type: 'checkbox', checked: !!S[key], 'data-key': key, onchange: () => { S[key] = cb.checked; onChange(); } });
   return h('div', { class: 'field' }, h('label', {}, label), cb);
 }
 
@@ -172,6 +172,9 @@ function checkField({ label, key, onChange = update }) {
 // ---------------------------------------------------------------------------
 function renderShared() {
   const root = document.getElementById('shared');
+  // rebuilding the panel replaces its controls: remember which one had focus and give it back below,
+  // so keyboard use of a select (arrow keys) keeps working across the rebuild it triggers
+  const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.key : null;
   root.replaceChildren();
   const cam = h('div', { class: 'card', style: tools[S.tool] && tools[S.tool].noCamera ? 'display: none' : '' },   // a tool may hide it (reciprocity) or name it ('Source camera')
     h('h2', {}, (tools[S.tool] && tools[S.tool].cameraTitle) || 'Camera'));
@@ -200,6 +203,7 @@ function renderShared() {
   coc.append(h('p', { class: 'note', id: 'cocNote' }));
   root.append(coc);
   if (tools[S.tool] && tools[S.tool].renderPanel) tools[S.tool].renderPanel(root);   // the tool's own inputs, below the shared ones
+  if (focused) { const el = root.querySelector(`[data-key="${focused}"]`); if (el) el.focus({ preventScroll: true }); }
 }
 
 // ---------------------------------------------------------------------------
