@@ -27,9 +27,11 @@ step; open the file in a browser or publish it with the rest of the repository.
   drawn to scale and a comparison table of all formats.
 - Reciprocity: corrected exposure time for long exposures (Schwarzschild effect) from the metered
   time, for Ilford/Kentmere (power law, Harman's 2023 factors), Kodak T-Max 100/400 and Tri-X,
-  Fomapan 100/200/400 (data-sheet tables, interpolated in log–log), Fuji Acros II, Kodak Portra 400 /
-  Ektar 100 (no data beyond 1 s) or custom parameters; log–log chart with a comparison film, tables
-  at standard times and of all films. Sources are listed in `optics.js` next to the `FILMS` table.
+  Fomapan 100/200/400 (data-sheet tables, interpolated in log–log), Fuji Acros II or custom
+  parameters; log–log chart with a comparison film, tables
+  at standard times and of all films with a reliability rating and a short recommendation. Foma's
+  own tables are rated low (user tests find 1–3 stops less failure), so the user-measured
+  alternatives sit next to them. Sources are linked from the page and listed in `optics.js`.
 
 Distances are measured from the lens (thin-lens model); camera distance scales usually measure
 from the film plane, which adds the image distance (about one focal length).

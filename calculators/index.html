@@ -34,19 +34,23 @@
   .field input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0 0 2px; }
   .unit { color: var(--muted); min-width: 26px; }
   .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
-  .warn { color: #ffb347; }   /* e.g. a lens whose image circle is smaller than the frame */
+  .warn { color: #ffb347; }   /* a caution: low reliability, vignetting, no data */
+  .extrap { color: #ffb347; font-style: italic; }   /* a value extrapolated beyond its data sheet: orange like the other cautions, italic to tell it apart */
+  td.hl.warn, td.hl2.warn, td.hl.extrap, td.hl2.extrap { color: #ffcf8a; text-shadow: 0 0 2px #000; }   /* a lighter orange on a highlighted row */
   td a, .note a { color: var(--accent); }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; table-layout: fixed; }   /* fixed: equal columns, widths do not follow the content */
   table.hf { width: max(100%, 680px); } table.dof { width: max(100%, 1070px); font-size: 13px; } table.fmts { width: max(100%, 880px); font-size: 13px; }
   table.fmts th:first-child { width: 110px; } table.fmts th:last-child { width: 170px; }
-  table.rtimes { width: max(100%, 480px); font-size: 13px; } table.rfilms { width: max(100%, 960px); font-size: 13px; }
-  table.rfilms th:first-child { width: 180px; } table.rfilms th:nth-child(2) { width: 120px; } table.rfilms th:nth-child(3) { width: 60px; } table.rfilms th:last-child { width: 240px; }
+  table.rtimes { width: max(100%, 480px); font-size: 13px; } table.rfilms { width: max(100%, 1060px); font-size: 13px; }
+  table.rfilms th:first-child { width: 170px; } table.rfilms th:nth-child(2) { width: 100px; } table.rfilms th:nth-child(3) { width: 50px; }
+  table.rfilms th:nth-child(4) { width: 190px; } table.rfilms th:nth-child(5) { width: 90px; } table.rfilms th:nth-child(6) { width: 230px; } table.rfilms th:last-child { width: 190px; }
+  table.rfilms td:first-child { white-space: normal; }
   th:first-child { width: 128px; }
   th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid #474b53; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   th:first-child, td:first-child { text-align: left; color: var(--muted); }
   th { color: var(--muted); font-weight: 500; }
-  .hl { background: rgba(79, 168, 255, .16); }
-  .hl2 { background: rgba(79, 168, 255, .45); color: #fff; }   /* current row ∩ current column; no bold, it would widen the column */
+  .hl { background: rgba(70, 110, 160, .22); }   /* row / column highlight and the comparison film: muted like .hl2, lighter */
+  .hl2 { background: rgba(60, 110, 170, .45); color: #fff; }   /* current row ∩ current column: a muted, darker blue so coloured warnings stay legible; no bold, it would widen the column */
   .tablewrap { overflow-x: auto; }
   .results { display: flex; flex-wrap: wrap; gap: 8px; }   /* tiles size to their content, they do not fill the row */
   .results.two { display: grid; grid-template-columns: max-content repeat(2, max-content); align-items: center; margin-top: 12px; }
@@ -560,7 +564,8 @@ function drawFormats(container, src, dst, ref) {
 const CUSTOM_FILM = 'custom (your own P and threshold)';
 const FILM_NAMES = O.FILMS.map(f => f.name).concat([CUSTOM_FILM]);
 const RECIP_TIMES = [1, 2, 4, 8, 15, 30, 60, 120, 240, 480, 900, 1800, 3600];
-function filmOf(name) { return name === CUSTOM_FILM ? { name: CUSTOM_FILM, maker: '', model: 'power', p: S.customP, threshold: S.customThreshold, source: 'your parameters', verified: true } : O.filmByName(name); }
+function filmOf(name) { return name === CUSTOM_FILM ? { name: CUSTOM_FILM, maker: '', model: 'power', p: S.customP, threshold: S.customThreshold, source: 'your parameters', verified: true, reliability: 'custom', advice: '' } : O.filmByName(name); }
+const RELIABILITY = { manufacturer: 'manufacturer', test: 'user test', heuristic: 'practice', low: 'low', custom: '' };
 // seconds -> "2.0 s", "1:30 (90 s)", "1:02:00"
 function fmtTime(t) {
   if (!Number.isFinite(t)) return '–';
@@ -571,6 +576,7 @@ function fmtTime(t) {
 }
 const modelText = f => f.model === 'power' ? `tc = tm^${f.p} above ${f.threshold} s`
   : f.model === 'table' ? `table: ${f.points.map(([a, b]) => `${a}\u00a0s\u00a0→\u00a0${+b.toFixed(1)}\u00a0s`).join(', ')}, interpolated`
+  : f.model === 'gainer' ? `tc = tm + ${f.a}·tm^${f.b}`
   : f.model === 'step' ? `none below ${f.noneBelow} s, +${Math.log2(f.factor).toFixed(1)} stop up to ${f.upTo} s`
   : `none up to ${f.upTo} s, no data beyond`;
 tools.reciprocity = {
@@ -596,11 +602,13 @@ tools.reciprocity = {
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Corrected vs metered time'), h('div', { id: 'rcChart' }),
       h('p', { class: 'note' }, 'Log–log axes. Dashed grey: no correction (corrected = metered). Cyan: the film, dashed where it is extrapolated beyond the data sheet; grey: the comparison film. Drag the green marker to change the metered time.')));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'At standard times'), h('div', { class: 'tablewrap', id: 'rcTimes' }),
-      h('p', { class: 'note' }, 'Corrected time and correction in stops for the chosen film (and the comparison film). Orange: extrapolated beyond the data sheet; – : no manufacturer data, test.')));
+      h('p', { class: 'note' }, 'Corrected time and correction in stops for the chosen film (and the comparison film). Orange italics: extrapolated beyond the data; – : no data at that time.')));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'All films at the metered time'), h('div', { class: 'tablewrap', id: 'rcFilms' }),
-      h('p', { class: 'note' }, 'Sources: Harman’s reciprocity sheet (2023) for Ilford and Kentmere, Kodak F-4016 / F-4043 / F-4017 / E-4050 / E-4046, Foma and Fujifilm data sheets. Kodak’s stop-only rows were converted with 2^stops; unverified entries are marked.')));
+      h('p', { class: 'note' }, 'Reliability: manufacturer = from the data sheet; user test = one photographer’s measurement; practice = what users report works, not measured; low = a data sheet that tests contradict (Foma’s tables overstate the failure by 1–3 stops past a few seconds). Orange italics: extrapolated beyond the data. Kodak’s stop-only rows were converted with 2^stops.')));
   },
   update() {
+    if (!filmOf(S.film)) { S.film = 'Ilford HP5+'; renderShared(); }                 // a stored name that no longer exists
+    if (S.film2 !== 'none' && !filmOf(S.film2)) { S.film2 = 'none'; renderShared(); }
     const film = filmOf(S.film), film2 = S.film2 === 'none' || S.film2 === CUSTOM_FILM ? null : filmOf(S.film2), tm = S.meteredTime;   // a stored 'custom' comparison is ignored
     const r = O.reciprocity(film, tm);
     const stat = (k, v) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v));
@@ -613,17 +621,20 @@ tools.reciprocity = {
       stat('correction (stops)', hasTc ? (none ? 'none' : `+${r.stops.toFixed(2)}`) : '–'),
       stat(N ? `or open f/${N} to (at ${fmtTime(tm)})` : 'or open the aperture', !hasTc ? '–' : none ? 'nothing' : N ? `f/${nOpen < 10 ? nOpen.toFixed(1) : nOpen.toFixed(0)} (≈ f/${nearest})` : `f-number ÷ ${Math.pow(2, r.stops / 2).toFixed(2)}`));
     const srcLine = f => [`${f.name}: ${modelText(f)}. Source: `, f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener' }, f.source) : f.source, '.'];
-    document.getElementById('rcNote').replaceChildren(...srcLine(film), ...(film2 ? ['\n', ...srcLine(film2)] : []));
+    const adviceLine = f => f.reliability && !['low', 'heuristic', 'custom'].includes(f.reliability) ? [` ${f.advice}`] : [];
+    document.getElementById('rcNote').replaceChildren(...srcLine(film), ...adviceLine(film), ...(film2 ? ['\n', ...srcLine(film2), ...adviceLine(film2)] : []));
     const warns = [];
     if (r.status === 'extrapolated') warns.push(`Extrapolated: the data sheet stops at ${film.points[film.points.length - 1][0]} s; the curve is continued with its last slope.`);
     if (r.status === 'nodata') warns.push(film.model === 'none' ? `No manufacturer data beyond ${film.upTo} s: Kodak says to make tests under your conditions.` : `No manufacturer data beyond ${film.upTo} s.`);
     if (!film.verified) warns.push('Unverified: this table is quoted second-hand, not from the manufacturer’s sheet.');
-    if (/Portra|Ektar|XP2/.test(film.name)) warns.push('Colour (and C-41) films also shift colour balance at long times; the correction only covers density.');
+    if (film.reliability === 'low') warns.push(`Low reliability: ${film.advice}`);
+    if (film.reliability === 'heuristic') warns.push(`Not measured: ${film.advice}`);
+    if (/XP2/.test(film.name)) warns.push('C-41 films also shift colour balance at long times; the correction only covers density.');
     document.getElementById('rcWarn').textContent = warns.join('\n');
     drawReciprocity(document.getElementById('rcChart'), film, film2, tm);
     // standard times
     const rowHl = RECIP_TIMES.reduce((a, b) => Math.abs(Math.log(b / tm)) < Math.abs(Math.log(a / tm)) ? b : a);
-    const cells = (f, t) => { const x = O.reciprocity(f, t), cls = x.status === 'extrapolated' ? ' warn' : '';
+    const cells = (f, t) => { const x = O.reciprocity(f, t), cls = x.status === 'extrapolated' ? ' extrap' : '';
       return [h('td', { class: cls, title: x.status === 'nodata' ? 'no manufacturer data' : null }, Number.isFinite(x.tc) ? fmtTime(x.tc) : '–'),
               h('td', { class: cls }, Number.isFinite(x.tc) ? (x.stops < 0.005 ? '0' : '+' + x.stops.toFixed(1)) : '–')]; };
     const head = ['metered', 'corrected', 'stops'].concat(film2 ? [`${film2.name}`, 'stops'] : []);
@@ -633,12 +644,14 @@ tools.reciprocity = {
         if (film2) tr.append(...cells(film2, t)); if (t === rowHl) tr.querySelectorAll('td').forEach(td => td.classList.add('hl')); return tr; }))));
     // all films at the metered time
     document.getElementById('rcFilms').replaceChildren(h('table', { class: 'rfilms' },
-      h('thead', {}, h('tr', {}, ['film', `corrected (${fmtTime(tm)})`, 'stops', 'model', 'source'].map(t => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['film', `corrected (${fmtTime(tm)})`, 'stops', 'model', 'reliability', 'use it when', 'source'].map(t => h('th', {}, t)))),
       h('tbody', {}, O.FILMS.map(f => { const x = O.reciprocity(f, tm), cls = f.name === S.film ? 'hl2' : f.name === S.film2 ? 'hl' : '';
         return h('tr', {}, [f.name + (f.verified ? '' : ' (unverified)'), Number.isFinite(x.tc) ? fmtTime(x.tc) : '–',
           Number.isFinite(x.tc) ? (x.stops < 0.005 ? '0' : '+' + x.stops.toFixed(1)) : '–', modelText(f).replace(/, interpolated$/, ''),
-          f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener' }, f.source) : f.source]
-          .map((t, i) => h('td', { class: cls + (i === 0 && !f.verified ? ' warn' : '') + (i === 1 && x.status === 'extrapolated' ? ' warn' : ''), style: i >= 3 ? 'white-space: normal; text-align: left' : null }, t))); }))));
+          RELIABILITY[f.reliability] || f.reliability, f.advice, f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener' }, f.source) : f.source]
+          .map((t, i) => h('td', { class: cls + (i === 0 && !f.verified ? ' warn' : '') + ((i === 1 || i === 2) && x.status === 'extrapolated' ? ' extrap' : '') + (i === 4 && f.reliability === 'low' ? ' warn' : ''),
+                             title: (i === 1 || i === 2) && x.status === 'extrapolated' ? 'extrapolated beyond the data' : null,
+                             style: i >= 3 ? 'white-space: normal; text-align: left; vertical-align: top' : 'vertical-align: top' }, t))); }))));
   },
 };
 

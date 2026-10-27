@@ -77,30 +77,64 @@
   // factors (its example: HP5+ 10 s -> 20.4 s); Kodak F-4016 (T-Max 100), F-4043 (T-Max 400),
   // F-4017 (Tri-X) "Adjustments for Long and Short Exposures"; Foma data sheets ("Schwarzschild
   // effect", lengthening of exposure 1 s / 10 s / 100 s); Fujifilm Neopan 100 Acros II data sheet;
-  // Kodak E-4050 (Portra 400) and E-4046 (Ektar 100): "no compensation from 1/10,000 s to 1 s, for
-  // longer exposures make tests".
+  // Foma's tables are widely reported to overstate the failure by 1-3
+  // stops beyond a few seconds (Photrio, FADU and 5x4 forum threads), so they carry reliability 'low'
+  // and the user-measured alternatives are listed next to them: Ian Grant's bracketed Fomapan 200 roll
+  // (about +1/2 stop at 1 s, +1 stop at 10 s, which he reports for Fomapan 100 as well), Alan Rockwood's
+  // camera-as-densitometer fit tc = tm + 0.4 tm^1.7 ('gainer' model: tc = tm + a tm^b), and a 2013
+  // large-format forum series on Fomapan 100 (no failure to 4 s, +1 stop at 30-60 s, +2 stops at 2 min).
+  // For Fomapan 400 no measurement could be found: only the users' practice of applying HP5+ factors at
+  // a lower EI, listed as 'heuristic' (likewise FP4+ factors for Fomapan 100).
+  // reliability: 'manufacturer' (data sheet), 'test' (a user's measurement), 'heuristic' (common
+  // practice, not measured), 'low' (data sheet contradicted by tests); advice: when to use it.
   const ilford = (name, p) => ({ name: 'Ilford ' + name, maker: 'Ilford', model: 'power', p, threshold: 1,
-                                 source: 'Harman reciprocity sheet (2023)', url: 'https://www.ilfordphoto.com/wp/wp-content/uploads/2024/05/Reciprocity-Failure-Compensation-v2.pdf', verified: true });
+                                 source: 'Harman reciprocity sheet (2023)', url: 'https://www.ilfordphoto.com/wp/wp-content/uploads/2024/05/Reciprocity-Failure-Compensation-v2.pdf', verified: true,
+                                 reliability: 'manufacturer', advice: 'General use.' });
+  const FOMA_LOW = 'Upper bound: tests to about 2 min find 1\u20133 stops less failure; a few very long pinhole exposures do match it. If used, pull development 10\u201320 %.';
+  const PHOTRIO_FOMA = 'https://www.photrio.com/forum/threads/fomapan-reciprocity-failure.37712/';
+  const GFF_FOMA100 = 'https://forum.grossformatfotografie.de/forum/thread/10431-fomapan-100-schwarzschild/';
+  const PHOTRIO_FOMA100 = 'https://www.photrio.com/forum/threads/fomapan-100-reciprocity-excessive.215495/';
+  const FADU_FOMA = 'https://www.film-and-darkroom-user.org.uk/forum/showthread.php?t=12739';
   const FILMS = [
     ilford('Pan F+', 1.33), ilford('FP4+', 1.26), ilford('HP5+', 1.31), ilford('Delta 100', 1.26), ilford('Delta 400', 1.41),
     ilford('Delta 3200', 1.33), ilford('SFX 200', 1.43), ilford('XP2 Super', 1.31), ilford('Ortho Plus', 1.25),
     { ...ilford('Kentmere 100', 1.26), name: 'Kentmere 100', maker: 'Kentmere' }, { ...ilford('Kentmere 400', 1.30), name: 'Kentmere 400', maker: 'Kentmere' },
     { name: 'Kodak T-Max 100', maker: 'Kodak', model: 'table', noneBelow: 0.1, points: [[1, 2 ** (1 / 3)], [10, 15], [100, 200]],
-      source: 'Kodak F-4016 (2016)', url: 'https://business.kodakmoments.com/sites/default/files/files/resources/f4016_TMax_100.pdf', verified: true },
+      source: 'Kodak F-4016 (2016)', url: 'https://business.kodakmoments.com/sites/default/files/files/resources/f4016_TMax_100.pdf', verified: true,
+      reliability: 'manufacturer', advice: 'General use; three data-sheet points, interpolated.' },
     { name: 'Kodak T-Max 400', maker: 'Kodak', model: 'table', noneBelow: 1, points: [[10, 10 * 2 ** (1 / 3)], [100, 300]],
-      source: 'Kodak F-4043', url: 'https://business.kodakmoments.com/sites/default/files/files/products/f4043_tmax_400.pdf', verified: true },
+      source: 'Kodak F-4043', url: 'https://business.kodakmoments.com/sites/default/files/files/products/f4043_tmax_400.pdf', verified: true,
+      reliability: 'manufacturer', advice: 'General use; two data-sheet points, interpolated.' },
     { name: 'Kodak Tri-X 400', maker: 'Kodak', model: 'table', noneBelow: 0.1, points: [[1, 2], [10, 50], [100, 1200]],
-      source: 'Kodak F-4017', url: 'https://business.kodakmoments.com/sites/default/files/files/resources/f4017_TriX.pdf', verified: true },
-    { name: 'Fomapan 100', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 2], [10, 80], [100, 1600]],
-      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-100', verified: true },
-    { name: 'Fomapan 200', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 3], [10, 90], [100, 1800]],
-      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-200', verified: true },
-    { name: 'Fomapan 400', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 1.5], [10, 60], [100, 800]],
-      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-400', verified: true },
+      source: 'Kodak F-4017', url: 'https://business.kodakmoments.com/sites/default/files/files/resources/f4017_TriX.pdf', verified: true,
+      reliability: 'manufacturer', advice: 'General use; Kodak also says to cut development 10 % per stop of correction.' },
+    { name: 'Fomapan 100 (Foma table)', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 2], [10, 80], [100, 1600]],
+      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-100', verified: true, reliability: 'low', advice: FOMA_LOW },
+    { name: 'Fomapan 100 (Ian Grant test)', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, Math.SQRT2], [10, 20]],
+      source: 'Photrio / 5x4 forums: low-light tests at half box speed', url: PHOTRIO_FOMA, verified: true,
+      reliability: 'test', advice: 'About +\u00bd stop at 1 s, +1 stop at 10 s, reported from memory across posts; a start for 1\u201330 s at EI 50.' },
+    { name: 'Fomapan 100 (large-format forum test)', maker: 'Foma', model: 'table', noneBelow: 4, points: [[30, 60], [120, 480]],
+      source: 'Grossformatfotografie forum (2013): 9x12 / 8x10 test series', url: GFF_FOMA100, verified: true,
+      reliability: 'test', advice: 'Nothing to 4 s, +1 stop around 30\u201360 s, +2 stops at 2 min matched a short reference exposure; readings\u2019 units not stated. Use for 4 s\u20132 min.' },
+    { name: 'Fomapan 100 (as FP4+, users\u2019 practice)', maker: 'Foma', model: 'power', p: 1.26, threshold: 1,
+      source: 'Photrio: Fomapan 100 reciprocity excessive', url: PHOTRIO_FOMA100, verified: true,
+      reliability: 'heuristic', advice: 'Users report the Ilford FP4+ factor at EI 50\u201364 works to a minute or two; not measured. Bracket.' },
+    { name: 'Fomapan 200 (Foma table)', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 3], [10, 90], [100, 1800]],
+      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-200', verified: true, reliability: 'low', advice: FOMA_LOW },
+    { name: 'Fomapan 200 (Ian Grant test)', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, Math.SQRT2], [10, 20]],
+      source: 'FADU forum: bracketed roll, 1\u201310 s, low daylight', url: FADU_FOMA, verified: true,
+      reliability: 'test', advice: 'Measured to 10 s in daylight at EI 100: a good start for 1\u201330 s. Beyond that it is extrapolated.' },
+    { name: 'Fomapan 200 (Rockwood fit)', maker: 'Foma', model: 'gainer', a: 0.4, b: 1.7, noneBelow: 0.5,
+      source: 'Photrio: camera-as-densitometer test, HC-110 H', url: 'https://www.photrio.com/forum/threads/fomapan-200-film-development-test-results-also-reciprocity.185255/', verified: true,
+      reliability: 'test', advice: 'Fit to one user\u2019s densitometer readings; use for 1 s to a few minutes.' },
+    { name: 'Fomapan 400 (Foma table)', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 1.5], [10, 60], [100, 800]],
+      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-400', verified: true, reliability: 'low', advice: FOMA_LOW },
+    { name: 'Fomapan 400 (as HP5+, users\u2019 practice)', maker: 'Foma', model: 'power', p: 1.31, threshold: 1,
+      source: '5x4.co.uk: Fomapan 200 reciprocity question', url: 'https://www.5x4.co.uk/threads/fomapan-200-reciprocity-question.2835/', verified: true,
+      reliability: 'heuristic', advice: 'No measured test of Fomapan 400 was found. Users apply HP5+ factors at EI 250 and found table-based app times 1\u20132 stops too long past 3 s. Bracket.' },
     { name: 'Fujifilm Neopan 100 Acros II', maker: 'Fujifilm', model: 'step', noneBelow: 120, factor: Math.SQRT2, upTo: 1000,
-      source: 'Fujifilm data sheet', url: 'https://asset.fujifilm.com/www/us/files/2020-08/ed6acf9a3aeefed477d0f169df7c8457/films_neopan100acros2_120_01.pdf', verified: true },
-    { name: 'Kodak Portra 400', maker: 'Kodak', model: 'none', upTo: 1, source: 'Kodak E-4050 ("make tests" beyond 1 s)', url: 'https://business.kodakmoments.com/sites/default/files/files/products/e4050_portra_400.pdf', verified: true },
-    { name: 'Kodak Ektar 100', maker: 'Kodak', model: 'none', upTo: 1, source: 'Kodak E-4046 ("make tests" beyond 1 s)', url: 'https://business.kodakmoments.com/sites/default/files/files/products/e4046_ektar_100.pdf', verified: true },
+      source: 'Fujifilm data sheet', url: 'https://asset.fujifilm.com/www/us/files/2020-08/ed6acf9a3aeefed477d0f169df7c8457/films_neopan100acros2_120_01.pdf', verified: true,
+      reliability: 'manufacturer', advice: 'General use up to 1000 s.' },
   ];
   const filmByName = name => FILMS.find(f => f.name === name);
   // returns { tc, stops, status } with status 'none' (no correction), 'ok', 'extrapolated' or 'nodata'
@@ -109,6 +143,7 @@
     if (film.model === 'power') return tm <= film.threshold ? done(tm, 'none') : done(Math.pow(tm, film.p), 'ok');
     if (film.model === 'step') return tm < film.noneBelow ? done(tm, 'none') : tm <= film.upTo ? done(tm * film.factor, 'ok') : done(NaN, 'nodata');
     if (film.model === 'none') return tm <= film.upTo ? done(tm, 'none') : done(NaN, 'nodata');
+    if (film.model === 'gainer') return tm < (film.noneBelow || 0) ? done(tm, 'none') : done(tm + film.a * Math.pow(tm, film.b), 'ok');   // Gainer's form tc = tm + a tm^b
     // table: log-log interpolation from the last "no correction" time through the data points
     if (tm <= film.noneBelow) return done(tm, 'none');
     const pts = [[film.noneBelow, film.noneBelow], ...film.points];
