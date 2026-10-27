@@ -37,9 +37,10 @@
   .warn { color: #ffb347; }   /* e.g. a lens whose image circle is smaller than the frame */
   td a, .note a { color: var(--accent); }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; table-layout: fixed; }   /* fixed: equal columns, widths do not follow the content */
-  table.hf { min-width: 680px; } table.dof { min-width: 1070px; font-size: 13px; } table.fmts { min-width: 880px; font-size: 13px; }
+  table.hf { width: max(100%, 680px); } table.dof { width: max(100%, 1070px); font-size: 13px; } table.fmts { width: max(100%, 880px); font-size: 13px; }
   table.fmts th:first-child { width: 110px; } table.fmts th:last-child { width: 170px; }
-  table.rtimes { min-width: 420px; font-size: 13px; } table.rfilms { min-width: 900px; font-size: 13px; } table.rfilms th:first-child { width: 180px; } table.rfilms th:nth-child(4) { width: 300px; } table.rfilms th:last-child { width: 240px; }
+  table.rtimes { width: max(100%, 480px); font-size: 13px; } table.rfilms { width: max(100%, 960px); font-size: 13px; }
+  table.rfilms th:first-child { width: 180px; } table.rfilms th:nth-child(2) { width: 120px; } table.rfilms th:nth-child(3) { width: 60px; } table.rfilms th:last-child { width: 240px; }
   th:first-child { width: 128px; }
   th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid #474b53; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   th:first-child, td:first-child { text-align: left; color: var(--muted); }
@@ -650,10 +651,12 @@ function drawReciprocity(container, film, film2, tm) {
   const clampX = x => Math.min(x1, Math.max(x0, x));
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
   const lab = v => v >= 3600 ? (v / 3600) + ' h' : v >= 60 ? (v / 60) + ' min' : v + ' s';
-  for (const t of [0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600]) {
-    svg.append(svgEl('line', { x1: X(t), x2: X(t), y1: y0, y2: y1, class: 'grid' }));
-    svg.append(svgEl('text', { x: X(t), y: y1 + 14, 'text-anchor': 'middle' }, lab(t)));
-  }
+  // the densest tick set whose closest pair of labels still has room (about 46 px)
+  const tickSets = [[0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600], [0.1, 0.3, 1, 3, 10, 30, 120, 600, 3600], [0.1, 1, 10, 60, 600, 3600]];
+  const minGap = ts => Math.min(...ts.slice(1).map((t, i) => X(t) - X(ts[i])));
+  const xTicks = tickSets.find(ts => minGap(ts) >= 46) || tickSets[tickSets.length - 1];
+  for (const t of tickSets[0]) svg.append(svgEl('line', { x1: X(t), x2: X(t), y1: y0, y2: y1, class: 'grid' }));
+  for (const t of xTicks) svg.append(svgEl('text', { x: X(t), y: y1 + 14, 'text-anchor': 'middle' }, lab(t)));
   for (const c of [0.1, 1, 10, 60, 600, 3600, 36000]) {
     svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(c), y2: Y(c), class: 'grid' }));
     svg.append(svgEl('text', { x: x0 - 4, y: Y(c) + 4, 'text-anchor': 'end' }, lab(c)));
