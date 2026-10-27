@@ -297,8 +297,27 @@ function el(tag, attrs, parent = svg) {
   return e;
 }
 const pts = poly => poly.map(p => { const q = S(p); return q.x.toFixed(1) + ',' + q.y.toFixed(1); }).join(' ');
+// Segments are clipped to the viewport (with a margin) in screen space before they are drawn: the
+// scene box is ±FAR m, so a line through it is millions of pixels long when zoomed in, and the
+// browser would rasterise every dash of it. The dash phase is kept with stroke-dashoffset.
+const CLIP_MARGIN = 40;
 function seg(a, b, stroke, width = 1.5, extra = {}) {
-  const p = S(a), q = S(b);
+  let p = S(a), q = S(b);
+  const W = svg.clientWidth + CLIP_MARGIN, Hh = svg.clientHeight + CLIP_MARGIN;
+  // Liang–Barsky: parameter range [t0, t1] of the part inside the rectangle
+  let t0 = 0, t1 = 1;
+  const dx = q.x - p.x, dy = q.y - p.y;
+  for (const [num, den] of [[p.x + CLIP_MARGIN, -dx], [W - p.x, dx], [p.y + CLIP_MARGIN, -dy], [Hh - p.y, dy]]) {
+    if (den === 0) { if (num < 0) return null; continue; }
+    const t = num / den;
+    if (den < 0) { if (t > t1) return null; if (t > t0) t0 = t; }
+    else { if (t < t0) return null; if (t < t1) t1 = t; }
+  }
+  if (t0 > 0 && extra['stroke-dasharray']) {
+    const d = extra['stroke-dasharray'].split(/[\s,]+/).map(Number), period = d.reduce((u, v) => u + v, 0) * (d.length % 2 ? 2 : 1);
+    extra = { ...extra, 'stroke-dashoffset': (t0 * Math.hypot(dx, dy)) % period };
+  }
+  q = V(p.x + t1 * dx, p.y + t1 * dy); p = V(p.x + t0 * dx, p.y + t0 * dy);
   return el('line', { x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke, 'stroke-width': width, ...extra });
 }
 function poly(points, fill, opacity, stroke = null, extra = {}, parent = svg) {
