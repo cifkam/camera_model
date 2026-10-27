@@ -32,6 +32,8 @@
   .field select, .field input[type=checkbox] { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; font: inherit; }
   .field select { max-width: 200px; min-width: 0; }   /* long film names must not widen the panel */
   .field input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0 0 2px; }
+  .inline-fields { display: flex; flex-wrap: wrap; gap: 4px 28px; margin-top: 6px; }   /* compact controls under a chart: label next to its input */
+  .inline-fields .field { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
   .unit { color: var(--muted); min-width: 26px; }
   .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
   .warn { color: #ffb347; }   /* a caution: low reliability, vignetting, no data */
@@ -92,7 +94,7 @@ const S = {
   focus: 3,           // m, used by the DoF tools
   chartMin: 0.3, chartMax: 100,   // m, distance axes of the DoF charts
   targetFormat: 'APS-C', eqRef: 'diagonal', sceneDist: 3,   // formats tool: the format compared with, the dimension compared, subject distance (m)
-  film: 'Ilford HP5+', film2: 'none', meteredTime: 10, rcAperture: 'none', customP: 1.3, customThreshold: 1,   // reciprocity tool (times in s)
+  film: 'Ilford HP5+', film2: 'none', meteredTime: 10, rcAperture: 'none', customP: 1.3, customThreshold: 1, rcLog: true, rcMax: 60,   // reciprocity tool (times in s; rcMax = span of the chart's metered axis)
   tool: 'dof',
 };
 const DEFAULTS = { ...S };   // before the stored settings are applied, for the reset links
@@ -157,9 +159,9 @@ function rangeField({ label, keyMin, keyMax, min, max, unit = '', onChange = upd
   return h('div', { class: 'field' }, h('label', {}, label),
     h('div', { class: 'val' }, a, h('span', { class: 'unit' }, '–'), b, h('span', { class: 'unit' }, unit)));
 }
-function selectField({ label, key, options, onChange = update }) {
+function selectField({ label, key, options, labels = String, onChange = update }) {
   const sel = h('select', { 'data-key': key, onchange: () => { S[key] = isNaN(+sel.value) ? sel.value : +sel.value; onChange(); } },
-    options.map(o => h('option', { value: o, selected: String(o) === String(S[key]) }, String(o))));
+    options.map(o => h('option', { value: o, selected: String(o) === String(S[key]) }, labels(o))));
   return h('div', { class: 'field' }, h('label', {}, label), sel);
 }
 function checkField({ label, key, onChange = update }) {
@@ -578,6 +580,7 @@ function fmtTime(t) {
   const r = Math.round(t), hh = Math.floor(r / 3600), m = Math.floor(r % 3600 / 60), sec = r % 60, pad = n => String(n).padStart(2, '0');
   return (hh ? `${hh}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`) + (t < 3600 ? ` (${r} s)` : '');
 }
+const fmtAxisTime = v => v >= 3600 ? +(v / 3600).toFixed(2) + ' h' : v >= 60 ? +(v / 60).toFixed(1) + ' min' : +v.toFixed(2) + ' s';   // axis ticks and the span menu
 const modelText = f => f.model === 'power' ? `tc = tm^${f.p} above ${f.threshold} s`
   : f.model === 'table' ? `table: ${f.points.map(([a, b]) => `${a}\u00a0s\u00a0→\u00a0${+b.toFixed(1)}\u00a0s`).join(', ')}, interpolated`
   : f.model === 'gainer' ? `tc = tm + ${f.a}·tm^${f.b}`
@@ -604,7 +607,10 @@ tools.reciprocity = {
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'rcStats' }),
       h('p', { class: 'note', id: 'rcNote', style: 'white-space: pre-line' }), h('p', { class: 'note warn', id: 'rcWarn', style: 'white-space: pre-line' })));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Corrected vs metered time'), h('div', { id: 'rcChart' }),
-      h('p', { class: 'note' }, 'Log–log axes. Dashed grey: no correction (corrected = metered). Cyan: the film, dashed where it is extrapolated beyond the data sheet; grey: the comparison film. Drag the green marker to change the metered time.')));
+      h('div', { class: 'inline-fields' },
+        selectField({ label: 'metered axis up to', key: 'rcMax', options: [5, 10, 30, 60, 120, 300, 600, 1800, 3600], labels: fmtAxisTime }),
+        checkField({ label: 'logarithmic axes', key: 'rcLog' })),
+      h('p', { class: 'note' }, 'Dashed grey: no correction (corrected = metered). Cyan: the film, dashed where it is extrapolated beyond the data sheet; grey: the comparison film. Drag the green marker to change the metered time.')));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'At standard times'), h('div', { class: 'tablewrap', id: 'rcTimes' }),
       h('p', { class: 'note' }, 'Corrected time and correction in stops for the chosen film (and the comparison film). Orange italics: extrapolated beyond the data; – : no data at that time.')));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'All films at the metered time'), h('div', { class: 'tablewrap', id: 'rcFilms' }),
@@ -660,34 +666,59 @@ tools.reciprocity = {
 };
 
 function drawReciprocity(container, film, film2, tm) {
-  const W = chartWidth(container), Hh = Math.round(Math.min(560, Math.max(300, W * 0.62))), x0 = 52, x1 = W - 14, y0 = 16, y1 = Hh - 40;
-  const tMin = 0.1, tMax = 3600, cMin = 0.1, cMax = 1e5;
-  const X = t => x0 + (x1 - x0) * (Math.log(t) - Math.log(tMin)) / (Math.log(tMax) - Math.log(tMin));
-  const Y = c => y1 - (y1 - y0) * (Math.log(c) - Math.log(cMin)) / (Math.log(cMax) - Math.log(cMin));
-  const Tinv = x => Math.exp(Math.log(tMin) + (clampX(x) - x0) / (x1 - x0) * (Math.log(tMax) - Math.log(tMin)));
-  const clampX = x => Math.min(x1, Math.max(x0, x));
+  const W = chartWidth(container), Hh = Math.round(Math.min(560, Math.max(300, W * 0.62))), x1 = W - 14, y0 = 16, y1 = Hh - 40;
+  const log = S.rcLog !== false, x0 = log ? 52 : 70, clampX = x => Math.min(x1, Math.max(x0, x));   // linear labels such as "16.7 min" need a wider margin
+  const lab = fmtAxisTime, anchor = x => x > x1 - 18 ? 'end' : 'middle';   // the last label must not run off the right edge
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
-  const lab = v => v >= 3600 ? (v / 3600) + ' h' : v >= 60 ? (v / 60) + ' min' : v + ' s';
-  // the densest tick set whose closest pair of labels still has room (about 46 px)
-  const tickSets = [[0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600], [0.1, 0.3, 1, 3, 10, 30, 120, 600, 3600], [0.1, 1, 10, 60, 600, 3600]];
-  const minGap = ts => Math.min(...ts.slice(1).map((t, i) => X(t) - X(ts[i])));
-  const xTicks = tickSets.find(ts => minGap(ts) >= 46) || tickSets[tickSets.length - 1];
-  for (const t of tickSets[0]) svg.append(svgEl('line', { x1: X(t), x2: X(t), y1: y0, y2: y1, class: 'grid' }));
-  for (const t of xTicks) svg.append(svgEl('text', { x: X(t), y: y1 + 14, 'text-anchor': 'middle' }, lab(t)));
-  for (const c of [0.1, 1, 10, 60, 600, 3600, 36000]) {
-    svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(c), y2: Y(c), class: 'grid' }));
-    svg.append(svgEl('text', { x: x0 - 4, y: Y(c) + 4, 'text-anchor': 'end' }, lab(c)));
+  let tMin, tMax, cMin, cMax, X, Y, Tinv;
+  const span = Math.max(5, +S.rcMax || 60);
+  const top = f => { let m = 0; for (let i = 0; i <= 50; i++) { const r = O.reciprocity(f, Math.max(0.01, span * i / 50)); if (Number.isFinite(r.tc)) m = Math.max(m, r.tc); } return m; };
+  if (log) {
+    tMin = 0.1; tMax = span; cMin = 0.1;
+    cMax = Math.min(1e5, Math.pow(10, Math.ceil(Math.log10(Math.max(tMax, top(film), film2 ? top(film2) : 0) * 1.05))));   // next decade above the curves
+    X = t => x0 + (x1 - x0) * (Math.log(t) - Math.log(tMin)) / (Math.log(tMax) - Math.log(tMin));
+    Y = c => y1 - (y1 - y0) * (Math.log(c) - Math.log(cMin)) / (Math.log(cMax) - Math.log(cMin));
+    Tinv = x => Math.exp(Math.log(tMin) + (clampX(x) - x0) / (x1 - x0) * (Math.log(tMax) - Math.log(tMin)));
+    // the densest tick set whose closest pair of labels still has room (about 46 px)
+    const tickSets = [[0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600], [0.1, 0.3, 1, 3, 10, 30, 120, 600, 3600], [0.1, 1, 10, 60, 600, 3600]].map(ts => ts.filter(t => t <= tMax));
+    const minGap = ts => Math.min(...ts.slice(1).map((t, i) => X(t) - X(ts[i])));
+    const xTicks = tickSets.find(ts => minGap(ts) >= 46) || tickSets[tickSets.length - 1];
+    for (const t of tickSets[0]) svg.append(svgEl('line', { x1: X(t), x2: X(t), y1: y0, y2: y1, class: 'grid' }));
+    for (const t of xTicks) svg.append(svgEl('text', { x: X(t), y: y1 + 14, 'text-anchor': anchor(X(t)) }, lab(t)));
+    for (const c of [0.1, 1, 10, 60, 600, 3600, 36000].filter(c => c <= cMax)) {
+      svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(c), y2: Y(c), class: 'grid' }));
+      svg.append(svgEl('text', { x: x0 - 4, y: Y(c) + 4, 'text-anchor': 'end' }, lab(c)));
+    }
+  } else {
+    // linear axes: metered 0 .. the chosen span, corrected 0 .. the largest value drawn
+    tMin = 0; tMax = span; cMin = 0;
+    cMax = Math.max(tMax, top(film), film2 ? top(film2) : 0) * 1.05;
+    X = t => x0 + (x1 - x0) * t / tMax;
+    Y = c => y1 - (y1 - y0) * c / cMax;
+    Tinv = x => (clampX(x) - x0) / (x1 - x0) * tMax;
+    // 4-7 ticks in round steps of the unit the labels use (seconds, minutes or hours)
+    const nice = r => { const p = Math.pow(10, Math.floor(Math.log10(r / 5))); return [1, 2, 5, 10].map(m => m * p).find(v => r / v <= 7) || 10 * p; };
+    const niceStep = r => { const u = r > 7200 ? 3600 : r > 120 ? 60 : 1; return nice(r / u) * u; };
+    const sx = niceStep(tMax), sy = niceStep(cMax);
+    for (let t = 0; t <= tMax + 1e-9; t += sx) {
+      svg.append(svgEl('line', { x1: X(t), x2: X(t), y1: y0, y2: y1, class: 'grid' }));
+      svg.append(svgEl('text', { x: X(t), y: y1 + 14, 'text-anchor': anchor(X(t)) }, lab(t)));
+    }
+    for (let c = 0; c <= cMax + 1e-9; c += sy) {
+      svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(c), y2: Y(c), class: 'grid' }));
+      svg.append(svgEl('text', { x: x0 - 4, y: Y(c) + 4, 'text-anchor': 'end' }, lab(c)));
+    }
   }
   svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'metered time'));
   svg.append(svgEl('text', { x: x0 + 4, y: y0 + 10 }, 'corrected time'));
-  svg.append(svgEl('line', { x1: X(tMin), y1: Y(tMin), x2: X(tMax), y2: Y(tMax), stroke: '#9096a0', 'stroke-dasharray': '4 4' }));
+  svg.append(svgEl('line', { x1: X(tMin), y1: Y(tMin), x2: X(tMax), y2: Y(tMax), stroke: '#9096a0', 'stroke-dasharray': '4 4' }));   // corrected = metered
   const curve = (f, color, width) => {
     // one path per status run so the extrapolated part can be dashed and 'nodata' leaves a gap
     const n = 300; let run = null;
     const flush = () => { if (run && run.d) svg.append(svgEl('path', { d: run.d, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-linejoin': 'round',
       'stroke-dasharray': run.status === 'extrapolated' ? '6 4' : null })); run = null; };
     for (let i = 0; i <= n; i++) {
-      const t = Math.exp(Math.log(tMin) + i / n * (Math.log(tMax) - Math.log(tMin))), x = O.reciprocity(f, t);
+      const t = log ? Math.exp(Math.log(tMin) + i / n * (Math.log(tMax) - Math.log(tMin))) : Math.max(0.01, tMax * i / n), x = O.reciprocity(f, t);
       if (!Number.isFinite(x.tc)) { flush(); continue; }
       const st = x.status === 'extrapolated' ? 'extrapolated' : 'ok';
       const pt = X(t).toFixed(1) + ',' + Y(Math.min(cMax, Math.max(cMin, x.tc))).toFixed(1);
@@ -702,7 +733,7 @@ function drawReciprocity(container, film, film2, tm) {
   svg.append(svgEl('line', { x1: xs, x2: xs, y1: y0, y2: y1, stroke: '#4fe07a', 'stroke-width': 1.5 }));
   if (Number.isFinite(r.tc)) svg.append(svgEl('circle', { cx: xs, cy: Y(Math.min(cMax, Math.max(cMin, r.tc))), r: 4, fill: '#4fe07a' }));
   container.replaceChildren(svg);
-  makeDraggable(container, x => { const v = Math.min(3600, Math.max(0.1, +Tinv(x).toFixed(2))); if (fields.meteredTime) fields.meteredTime.set(v); else S.meteredTime = v; update(); });
+  makeDraggable(container, x => { const v = Math.min(tMax, Math.max(0.1, +Tinv(x).toFixed(2))); if (fields.meteredTime) fields.meteredTime.set(v); else S.meteredTime = v; update(); });
 }
 
 // ---------------------------------------------------------------------------
