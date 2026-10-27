@@ -49,6 +49,8 @@
   table.rfilms th:first-child { width: 170px; } table.rfilms th:nth-child(2) { width: 100px; } table.rfilms th:nth-child(3) { width: 50px; }
   table.rfilms th:nth-child(4) { width: 190px; } table.rfilms th:nth-child(5) { width: 90px; } table.rfilms th:nth-child(6) { width: 230px; } table.rfilms th:last-child { width: 190px; }
   table.rfilms td:first-child { white-space: normal; }
+  table.rfilms th:nth-child(n+4) { text-align: left; }   /* the text columns: headers aligned like their cells */
+  table.rfilms th { white-space: normal; vertical-align: bottom; }   /* a long heading such as 'corrected (10.0 s)' wraps rather than being cut */
   th:first-child { width: 128px; }
   th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid #474b53; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   th:first-child, td:first-child { text-align: left; color: var(--muted); }
@@ -608,8 +610,9 @@ function fmtTime(t) {
   return (hh ? `${hh}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`) + (t < 3600 ? ` (${r} s)` : '');
 }
 const fmtAxisTime = v => v >= 3600 ? +(v / 3600).toFixed(2) + ' h' : v >= 60 ? +(v / 60).toFixed(1) + ' min' : +v.toFixed(2) + ' s';   // axis ticks and the span menu
-const modelText = f => f.model === 'power' ? `tc = tm^${f.p} above ${f.threshold} s`
-  : f.model === 'table' ? `table: ${f.points.map(([a, b]) => `${a}\u00a0s\u00a0→\u00a0${+b.toFixed(1)}\u00a0s`).join(', ')}, interpolated`
+// sep: between the rows of a table model (', ' in a sentence, '\n' in the all-films table)
+const modelText = (f, sep = ', ') => f.model === 'power' ? `tc = tm^${f.p} above ${f.threshold} s`
+  : f.model === 'table' ? `${f.points.map(([a, b]) => `${a}\u00a0s\u00a0→\u00a0${+b.toFixed(1)}\u00a0s`).join(sep)}, interpolated`
   : f.model === 'gainer' ? `tc = tm + ${f.a}·tm^${f.b}`
   : f.model === 'step' ? `none below ${f.noneBelow} s, +${Math.log2(f.factor).toFixed(1)} stop up to ${f.upTo} s`
   : `none up to ${f.upTo} s, no data beyond`;
@@ -684,14 +687,14 @@ tools.reciprocity = {
         if (t === rowHl) tr.querySelectorAll('td').forEach(td => td.classList.add('hl')); return tr; }))));
     // all films at the metered time
     document.getElementById('rcFilms').replaceChildren(h('table', { class: 'rfilms' },
-      h('thead', {}, h('tr', {}, ['film', `corrected (${fmtTime(tm)})`, 'stops', 'model', 'reliability', 'use it when', 'source'].map(t => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ['film', `corrected (${fmtTime(tm).replace(/ /g, '\u00a0')})`, 'stops', 'model', 'reliability', 'use it when', 'source'].map(t => h('th', {}, t)))),
       h('tbody', {}, O.FILMS.map(f => { const x = O.reciprocity(f, tm), cls = f.name === S.film ? 'hlm' : f.name === S.film2 ? 'hlc' : '';
         return h('tr', {}, [f.name + (f.verified ? '' : ' (unverified)'), Number.isFinite(x.tc) ? fmtTime(x.tc) : '–',
-          Number.isFinite(x.tc) ? (x.stops < 0.005 ? '0' : '+' + x.stops.toFixed(1)) : '–', modelText(f).replace(/, interpolated$/, ''),
+          Number.isFinite(x.tc) ? (x.stops < 0.005 ? '0' : '+' + x.stops.toFixed(1)) : '–', modelText(f, '\n').replace(/, interpolated$/, ''),
           RELIABILITY[f.reliability] || f.reliability, f.advice, f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener' }, f.source) : f.source]
           .map((t, i) => h('td', { class: cls + (i === 0 && !f.verified ? ' warn' : '') + ((i === 1 || i === 2) && x.status === 'extrapolated' ? ' extrap' : '') + (i === 4 && f.reliability === 'low' ? ' warn' : ''),
                              title: (i === 1 || i === 2) && x.status === 'extrapolated' ? 'extrapolated beyond the data' : null,
-                             style: i >= 3 ? 'white-space: normal; text-align: left; vertical-align: top' : 'vertical-align: top' }, t))); }))));
+                             style: i === 3 ? 'white-space: pre-line; text-align: left; vertical-align: top' : i > 3 ? 'white-space: normal; text-align: left; vertical-align: top' : 'vertical-align: top' }, t))); }))));   // the model column: one row of a table model per line
   },
 };
 
