@@ -21,5 +21,5 @@ GitHub Pages; the root `index.html` links to the individual tools.
 
 `.github/workflows/pages.yml` publishes only the pages themselves (`index.html`, `3d/index.html`, `2d/index.html`,
 `calculators/index.html` and `calculators/optics.js`) to GitHub Pages on every push to `main`, plus
-`404.html` and uppercase alias folders (`2D/`, `3D/`) that redirect to the real directories, since Pages
+`favicon.ico`, `404.html` and uppercase alias folders (`2D/`, `3D/`) that redirect to the real directories, since Pages
 paths are case-sensitive.
