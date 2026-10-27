@@ -18,6 +18,9 @@ step; open the file in a browser or publish it with the rest of the repository.
 
 ## Tools so far
 
+Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`, `#table`,
+`#formats`, `#reciprocity`. The address follows the selected tab.
+
 - Depth of field: near/far limits, hyperfocal distance, magnification; a sharp-range bar on a
   logarithmic distance axis and near/far-vs-focus curves for every aperture, both draggable.
 - Hyperfocal table by focal length and aperture.

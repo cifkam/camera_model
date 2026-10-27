@@ -743,8 +743,17 @@ function drawReciprocity(container, film, film2, tm) {
 function renderNav() {
   const nav = document.getElementById('nav');
   nav.replaceChildren(...Object.entries(tools).map(([id, t]) =>
-    h('button', { class: id === S.tool ? 'active' : '', onclick: () => { S.tool = id; renderNav(); renderTool(); } }, t.title)));
+    h('button', { class: id === S.tool ? 'active' : '', onclick: () => selectTool(id) }, t.title)));
 }
+// Each tab is addressable as #id (e.g. …/calculators/#reciprocity), so a link can open a given tab.
+function selectTool(id) {
+  if (!tools[id] || id === S.tool) return;
+  S.tool = id;
+  history.replaceState(null, '', '#' + id);   // keep the address in step without filling the history
+  renderNav(); renderTool();
+}
+function toolFromHash() { return decodeURIComponent(location.hash.slice(1)).toLowerCase(); }
+window.addEventListener('hashchange', () => selectTool(toolFromHash()));   // a hash link followed on the page itself
 function renderTool() {
   const root = document.getElementById('tool');
   root.replaceChildren();
@@ -761,6 +770,7 @@ function update() {
   save();
 }
 if (!chartObserver) window.addEventListener('resize', () => tools[S.tool].update());   // fallback: charts are drawn in pixels
+if (tools[toolFromHash()]) S.tool = toolFromHash();   // a link to a tab wins over the remembered one
 if (!tools[S.tool]) S.tool = 'dof';
 renderShared();
 renderNav();
