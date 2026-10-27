@@ -39,6 +39,7 @@
   body .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
   body .lil-gui .controller.boolean .name { width: auto; min-width: 0; flex: 1 1 auto; }
   body .lil-gui .controller.boolean .widget { width: auto; flex: 0 0 auto; margin-right: 10px; }
+  body .lil-gui .controller.divider { border-bottom: 1px solid #555; padding-bottom: 5px; margin-bottom: 5px; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -150,8 +151,8 @@ const P = {
   showCoverageCone: false,   // the lens's coverage cone in object space and its section with the plane of sharp focus
   showParallel: false,       // planes parallel to the film, each drawn as the rectangle that projects onto the film gate
   showFov: true, showSharpArea: true, showFullPlane: false,
-  showPlanes: true, showLines: false, showBellows: true, showGround: true,
-  showUnderground: true,   // draw the faint parts below the ground (only matters while the ground is shown)
+  showPlanes: true, showLines: false, showGround: true,
+  showUnderground: true,   // draw the faint lines below the ground (only matters while the ground is shown)
 };
 
 // scene backgrounds: background + fog, ground slab and grid colours as matched sets
@@ -447,7 +448,7 @@ function drawPlanePoly(group, poly, color, opacity) {
     group.add(edges(below, { opacity: UNDER_LINE, depthTest: false }));
   }
 }
-// Framed geometry (sharp area, in-focus volume): while the ground is drawn, the part below it
+// Framed geometry (the framed plane of sharp focus, in-focus volume): while the ground is drawn, the part below it
 // is drawn at reduced opacity and without depth test so it shows through the floor
 function drawFramedPolys(group, polys, color, opacity, outlineColor, box) {
   const parts = P.showGround
@@ -617,7 +618,9 @@ function update() {
   }
 
   // --- bellows ----------------------------------------------------------------
-  if (P.showBellows) {
+  // Only the inward-facing sides are drawn (the winding faces inward): the wall nearest the viewer is left out, so
+  // the rays and lines inside the camera are never covered; the far wall is lightly transparent.
+  {
     const inW = fw - 2 * bar, inH = fh - 2 * bar;
     const corner = (pose, sx, sy) => new THREE.Vector3(sx * inW / 2, sy * inH / 2, 0).applyQuaternion(pose.quaternion).add(pose.position);
     const S = [[-1,-1],[1,-1],[1,1],[-1,1]];
@@ -630,7 +633,9 @@ function update() {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.computeVertexNormals();
-    camLocal.add(new THREE.Mesh(g, mat(0x7a1f1f, { opacity: 0.55 })));
+    const bellows = new THREE.Mesh(g, mat(0x6a1c1c, { side: THREE.FrontSide, opacity: 0.7 }));
+    bellows.renderOrder = -1;   // drawn before the other transparent objects, so what is inside the camera blends over it
+    camLocal.add(bellows);
   }
 
   // --- ground -----------------------------------------------------------------
@@ -691,7 +696,7 @@ function update() {
   // BEHIND metres behind it, E below ground and E above the lens.
   const SB = { min: new THREE.Vector3(-E, -E, -BEHIND), max: new THREE.Vector3(E, h + E, E) };
   const bigBox = SB;
-  // framed things (sharp area, in-focus volume) stop at the ground while it is drawn, otherwise they use the whole box
+  // framed things (the framed plane of sharp focus, in-focus volume) stop at the ground while it is drawn, otherwise they use the whole box
   const posfBox = SB;   // framed things are split at the ground when drawn (see drawFramedPolys)
 
   const posfColor = virtual ? COL.posfVirtual : COL.posf;
@@ -756,7 +761,7 @@ function update() {
       new THREE.LineBasicMaterial({ color: nVig ? COL.vignette : 0x9a9a9a, transparent: true, opacity: 0.9 })));
   }
 
-  // --- sharp area in frame: plane of sharp focus ∩ frustum ---------------------
+  // --- plane of sharp focus in frame: the plane ∩ frustum ---------------------
   // Only the part beyond the front focal plane is real. The area is unbounded when
   // part of the frame looks past the plane (it leaves through infinity); it is then
   // cut at the scene box.
@@ -882,9 +887,9 @@ function update() {
     const L = (i, j) => sharpQuad[i].distanceTo(sharpQuad[j]);
     const w = [L(0, 1), L(3, 2)], hh = [L(0, 3), L(1, 2)];
     const rng = v => Math.abs(v[0] - v[1]) < 0.005 * Math.max(v[0], v[1]) ? fmt(v[0]) : `${fmt(Math.min(...v))}–${fmt(Math.max(...v))}`;
-    txt += `${sw(COL.fov)}<b>Sharp area in frame</b> (${P.format}, on the plane): ${rng(w)} m wide × ${rng(hh)} m high\n`;
+    txt += `${sw(COL.fov)}<b>Plane of sharp focus in frame</b> (${P.format}): ${rng(w)} m wide × ${rng(hh)} m high\n`;
   } else if (sharpPoly.length >= 3) {
-    txt += `${sw(COL.fov)}<b>Sharp area in frame</b>: the plane leaves the frame through infinity (area cut at the scene extent)\n`;
+    txt += `${sw(COL.fov)}<b>Plane of sharp focus in frame</b>: the plane leaves the frame through infinity (area cut at the scene extent)\n`;
   } else if (posf) {
     txt += `${sw(COL.fov)}Frame does not meet the plane of sharp focus in front of the lens\n`;
   }
@@ -990,19 +995,18 @@ cocCtrls.print.push(
 cocCtrls.manual.push(fD.add(P, 'coc', 0.02, 0.5, 0.005).name('CoC on film (mm)'));
 
 const fV = gui.addFolder('Display');
-fV.add(P, 'showSharpArea').name('sharp area in frame');
-fV.add(P, 'showFullPlane').name('extended plane of sharp focus');
+fV.add(P, 'showSharpArea').name('plane of sharp focus in frame');
+fV.add(P, 'showFullPlane').name('extended plane of sharp focus').domElement.classList.add('divider');
 fV.add(P, 'showDof').name('in-focus volume in frame');
-fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
+fV.add(P, 'showDofPlanes').name('extended near/far limit planes').domElement.classList.add('divider');
 fV.add(P, 'showFov').name('field of view rays');
 fV.add(P, 'showCoverage').name('lens coverage on film');
-fV.add(P, 'showCoverageCone').name('lens coverage cone');
+fV.add(P, 'showCoverageCone').name('lens coverage cone').domElement.classList.add('divider');
 const parallelCtrl = fV.add(P, 'showParallel').name('planes parallel to film (no keystone)');
 fV.add(P, 'showPlanes').name('extended film & lens planes');
 const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
-fV.add(P, 'showBellows').name('bellows');
 fV.add(P, 'showGround').name('ground');
-fV.add(P, 'showUnderground').name('parts below the ground');
+fV.add(P, 'showUnderground').name('lines below the ground');
 fV.close();
 applyCameraMode();
 

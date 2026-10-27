@@ -42,6 +42,7 @@
   body .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
   body .lil-gui .controller.boolean .name { width: auto; min-width: 0; flex: 1 1 auto; }
   body .lil-gui .controller.boolean .widget { width: auto; flex: 0 0 auto; margin-right: 10px; }
+  body .lil-gui .controller.divider { border-bottom: 1px solid #555; padding-bottom: 5px; margin-bottom: 5px; }
 </style>
 </head>
 <body>
@@ -121,8 +122,8 @@ const P = {
   cameraHeight: 1.2, background: 'dark',
   fnumber: 11, cocMode: 'from print', printLong: 40, viewDist: 50, eyeRes: 1500, coc: 0.1,
   showSharpArea: true, showFullPlane: false, showDof: true, showDofPlanes: false, showFov: true,
-  showCoverage: true, showCoverageCone: false, showPlanes: true, showLines: true, showHyperfocal: true,
-  showBellows: true, showGround: true, showUnderground: true, showGrid: true,
+  showCoverageCone: true, showLines: true, showHyperfocal: true,
+  showGround: true, showUnderground: true, showGrid: true,
 };
 const ZERO = { frontTilt: 0, frontRise: 0, rearTilt: 0, rearRise: 0 };
 const THEMES = {
@@ -300,9 +301,9 @@ function seg(a, b, stroke, width = 1.5, extra = {}) {
   const p = S(a), q = S(b);
   return el('line', { x1: p.x, y1: p.y, x2: q.x, y2: q.y, stroke, 'stroke-width': width, ...extra });
 }
-function poly(points, fill, opacity, stroke = null, extra = {}) {
+function poly(points, fill, opacity, stroke = null, extra = {}, parent = svg) {
   if (points.length < 3) return null;
-  return el('polygon', { points: pts(points), fill, 'fill-opacity': opacity, stroke, 'stroke-width': stroke ? 1.2 : 0, ...extra });
+  return el('polygon', { points: pts(points), fill, 'fill-opacity': opacity, stroke, 'stroke-width': stroke ? 1.2 : 0, ...extra }, parent);
 }
 const fmt = (x, d = 2) => Number.isFinite(x) ? x.toFixed(d) : (x === Infinity ? '∞' : '–');
 const sw = c => `<span class="sw" style="background:${c}"></span>`;
@@ -342,6 +343,10 @@ function update() {
       seg(V(gridX[0], y), V(gridX[1], y), isMajor(y) ? T.gridMajor : T.gridMinor, isMajor(y) ? 1 : 0.6, { 'stroke-opacity': isMajor(y) ? 0.55 : 0.4 });
   }
 
+  // the bellows go on a layer of their own here, under everything drawn later, so the rays and
+  // construction lines inside the camera stay visible
+  g.bellowsLayer = el('g', {});
+
   // --- field of view (frustum) ---------------------------------------------
   let frustumHp = null, frustum = [];
   if (g.fovOk) {
@@ -352,9 +357,11 @@ function update() {
   }
   if (P.showFov && frustum.length) {
     poly(frustum, COL.fov, 0.08);
-    for (const [d, vig] of [[g.dT, g.vigT], [g.dB, g.vigB]]) {
+    for (const [p, d, vig] of [[g.Pt, g.dT, g.vigT], [g.Pb, g.dB, g.vigB]]) {
+      const c = vig ? COL.vignette : COL.fov;
+      seg(p, C, c, 0.9, { 'stroke-opacity': 0.85 });                 // inside the camera: film edge to the lens centre
       const r = clipSegment(C, add(C, mul(d, L)), boxHp);
-      if (r) seg(r[0], r[1], vig ? COL.vignette : COL.fov, 1.2, { 'stroke-opacity': 0.9 });
+      if (r) seg(r[0], r[1], c, 1.2, { 'stroke-opacity': 0.9 });
     }
   }
 
@@ -376,19 +383,19 @@ function update() {
   }
   if (P.showDof && dofPoly.length) poly(dofPoly, COL.dof, 0.22, COL.dof, { 'stroke-opacity': 0.7 });
 
-  // --- extended film and lens lines, construction lines ---------------------
-  if (P.showPlanes) {
-    const rf = clipLine(g.filmW); if (rf) seg(rf[0], rf[1], COL.film, 1, { 'stroke-opacity': 0.35 });
-    const rl = clipLine(g.lensLine); if (rl) seg(rl[0], rl[1], COL.lens, 1, { 'stroke-opacity': 0.45 });
-  }
+  // --- construction lines, then the extended film and lens lines on top of them ---------------
   if (P.showLines && viewCam) {
     const rF = clipLine(g.focalLine); if (rF) seg(rF[0], rF[1], COL.hinge, 1, { 'stroke-opacity': 0.4, 'stroke-dasharray': '2 5' });
     const rP = clipLine(g.filmParallel); if (rP) seg(rP[0], rP[1], COL.hinge, 1, { 'stroke-opacity': 0.4, 'stroke-dasharray': '2 5' });
   }
+  {
+    const rf = clipLine(g.filmW); if (rf) seg(rf[0], rf[1], COL.film, 1, { 'stroke-opacity': 0.35 });
+    const rl = clipLine(g.lensLine); if (rl) seg(rl[0], rl[1], COL.lens, 1, { 'stroke-opacity': 0.45 });
+  }
 
   // --- lens coverage ---------------------------------------------------------
   const anyVig = g.vigT || g.vigB, covCol = anyVig ? COL.vignette : COL.coverage;
-  if (P.showCoverage) {
+  if (P.showCoverageCone) {
     for (const sgn of [1, -1]) {
       const d = rot(mul(nl, -1), sgn * g.covAngle);
       const hit = intersectLines(lineFrom(C, perp(d)), g.filmW);
@@ -478,7 +485,7 @@ function update() {
   if (sharpSeg) {
     const a = sharpSeg[0], b = sharpSeg[1], off = p => Math.max(Math.abs(p.x), Math.abs(p.y)) > 0.99 * FAR;
     const pt = p => off(p) ? '∞' : `(${fmt(p.x, 1)}, ${fmt(p.y, 1)}) m`;
-    txt += `${sw(COL.fov)}<b>Sharp line in frame</b> (${P.format}, ${P.orientation}): from ${pt(a)} to ${pt(b)}` +
+    txt += `${sw(COL.fov)}<b>Plane of sharp focus in frame</b> (${P.format}, ${P.orientation}): from ${pt(a)} to ${pt(b)}` +
            (off(a) || off(b) ? ` (runs off to infinity)` : `, length ${fmt(dist(a, b), 1)} m`) + `\n`;
   } else if (g.posf && !g.fovOk) txt += `${sw(COL.fov)}Film edges look behind the lens: no field of view\n`;
   else if (g.posf) txt += `${sw(COL.fov)}Frame does not meet the plane of sharp focus in front of the lens\n`;
@@ -530,10 +537,10 @@ function drawCamera(g) {
     seg(toWorldP(bottom), toWorldP(V(bottom.x, railY)), '#44474f', 3);
   }
   // bellows
-  if (P.showBellows) {
+  {
     const corners = [add(rearL.c, mul(rearL.u, fh / 2 - bar / 2)), add(frontL.c, mul(frontL.u, fh / 2 - bar / 2)),
                      sub(frontL.c, mul(frontL.u, fh / 2 - bar / 2)), sub(rearL.c, mul(rearL.u, fh / 2 - bar / 2))];
-    poly(corners.map(toWorldP), '#7a1f1f', 0.55);
+    poly(corners.map(toWorldP), '#7a1f1f', 0.4, null, {}, g.bellowsLayer);
   }
   // rear standard: frame with the ground glass (image area) as a white line
   rect(rearL.c, rearL.u, rearL.n, fh, 0.008, '#5a4634');
@@ -690,19 +697,16 @@ function applyCocMode() {
 }
 
 const fV = gui.addFolder('Display');
-fV.add(P, 'showSharpArea').name('sharp line in frame');
-fV.add(P, 'showFullPlane').name('extended plane of sharp focus');
+fV.add(P, 'showSharpArea').name('plane of sharp focus in frame');
+fV.add(P, 'showFullPlane').name('extended plane of sharp focus').domElement.classList.add('divider');
 fV.add(P, 'showDof').name('in-focus region in frame');
-fV.add(P, 'showDofPlanes').name('extended near/far limit planes');
+fV.add(P, 'showDofPlanes').name('extended near/far limit planes').domElement.classList.add('divider');
 fV.add(P, 'showFov').name('field of view rays');
-fV.add(P, 'showCoverage').name('lens coverage on film');
-fV.add(P, 'showCoverageCone').name('lens coverage cone');
+fV.add(P, 'showCoverageCone').name('lens coverage cone').domElement.classList.add('divider');
 fV.add(P, 'showHyperfocal').name('hyperfocal distance');
-fV.add(P, 'showPlanes').name('extended film & lens planes');
 const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge');
-fV.add(P, 'showBellows').name('bellows');
 fV.add(P, 'showGround').name('ground');
-fV.add(P, 'showUnderground').name('parts below the ground');
+fV.add(P, 'showUnderground').name('lines below the ground');
 fV.add(P, 'showGrid').name('grid');
 fV.close();
 const fS = gui.addFolder('Scene');

@@ -25,7 +25,7 @@ the angle of the plane of sharp focus, and the hinge distance J.
   folder, the extended film and lens planes are on by default
 - lavender: field of view, rays from the four film-gate corners through the lens centre; this
   is where the film format and focal length matter, and rear tilt/swing shows up as keystoning
-  of the sharp area. The sharp area is the plane clipped by the frustum, so when part of the
+  of the framed plane. The framed plane of sharp focus is the plane clipped by the frustum, so when part of the
   frame looks past the plane (it "leaves through infinity") the area runs off to the scene
   extent instead of disappearing; the in-focus volume is likewise the frustum clipped by the
   near and far half-spaces
