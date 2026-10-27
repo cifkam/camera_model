@@ -155,6 +155,24 @@
     return done(Math.exp(Math.log(c0) + u * (Math.log(c1) - Math.log(c0))), extrapolated ? 'extrapolated' : 'ok');
   }
 
+  // --- development time vs temperature ---
+  // Ilford's "Film development time/temperature compensation chart" (April 2002; 18–27 °C, 4:00–25:00
+  // at 20 °C, entries rounded to 15 s) fitted in log(time) as a quadratic in dT = T − 20 °C by least
+  // squares over its 292 entries: mean error 6 s, largest 22 s. Ilford's own example, 8:00 at 20 °C →
+  // 5:30 at 24 °C, comes out as 5:29. Outside 18–27 °C the curve is extrapolated.
+  // https://www.ilfordphoto.com/wp/wp-content/uploads/2017/03/Temperature-compensation-chart.pdf
+  const DEV_TEMP = { a: -0.10295, b: 0.002066, range: [18, 27] };
+  // time multiplier relative to 20 °C; 'percent': each degree warmer takes `percent` % off the time
+  const devTempFactor = (dT, model = 'ilford', percent = 10) =>
+    model === 'percent' ? Math.pow(1 - percent / 100, dT) : Math.exp(DEV_TEMP.a * dT + DEV_TEMP.b * dT * dT);
+  // time at temperature `to` (°C) given `time` at `from` (°C): { time, factor, status: 'ok' | 'extrapolated' }.
+  // continuous (rotary) agitation takes 15 % off, the rule the Massive Dev Chart's converter applies.
+  function devTime(time, from, to, { model = 'ilford', percent = 10, continuous = false } = {}) {
+    const factor = devTempFactor(to - 20, model, percent) / devTempFactor(from - 20, model, percent) * (continuous ? 0.85 : 1);
+    const inRange = T => model !== 'ilford' || (T >= DEV_TEMP.range[0] - 1e-9 && T <= DEV_TEMP.range[1] + 1e-9);
+    return { time: time * factor, factor, status: inRange(from) && inRange(to) ? 'ok' : 'extrapolated' };
+  }
+
   // Scheimpflug: lens tilt (rad) that puts the hinge line at distance J below the lens
   const tiltForHinge = (f, J) => Math.asin(f / J);
   const hingeDistance = (f, tiltRad) => f / Math.sin(tiltRad);
@@ -162,7 +180,7 @@
   const Optics = { FORMATS, IMAGE_CIRCLE, APERTURES, diagonal, cocFromPrint, hyperfocal, dof, extensionFor,
                    subjectFor, bellows, angleOfView, focusSpread, tiltForHinge, hingeDistance,
                    measure, cropFactor, equivalentFocal, equivalentAperture, anglesOfView, sceneCoverage,
-                   FILMS, filmByName, reciprocity };
+                   FILMS, filmByName, reciprocity, DEV_TEMP, devTempFactor, devTime };
   root.Optics = Optics;
   if (typeof module !== 'undefined' && module.exports) module.exports = Optics;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -72,5 +72,19 @@ check('Acros II 2000 s: no data', rc('Fujifilm Neopan 100 Acros II', 2000).statu
 check('custom p = 1 is the identity', O.reciprocity({ model: 'power', p: 1, threshold: 1 }, 30).tc, 30);
 check('stops of a 4x correction', O.reciprocity({ model: 'power', p: 2, threshold: 1 }, 4).stops, 2);
 
+// development time vs temperature (Ilford chart fit)
+check('Ilford example: 8:00 at 20 C -> 5:30 at 24 C', O.devTime(8, 20, 24).time, 5.5, 0.05);
+check('chart row 10:00 at 20 C -> 12:30 at 18 C', O.devTime(10, 20, 18).time, 12.5, 0.15);
+check('chart row 20:00 at 20 C -> 10:45 at 27 C', O.devTime(20, 20, 27).time, 10.75, 0.15);
+check('chart row 20:00 at 20 C -> 16:15 at 22 C', O.devTime(20, 20, 22).time, 16.25, 0.2);
+check('same temperature: unchanged', O.devTime(7.5, 20, 20).time, 7.5);
+check('there and back', O.devTime(O.devTime(8, 20, 24).time, 24, 20).time, 8);
+check('a base other than 20 C reads the same chart row', O.devTime(O.devTime(8, 20, 24).time, 24, 18).time, O.devTime(8, 20, 18).time, 1e-9);
+check('inside 18-27 C is ok', O.devTime(8, 20, 24).status === 'ok' ? 1 : 0, 1);
+check('16 C is extrapolated', O.devTime(8, 20, 16).status === 'extrapolated' ? 1 : 0, 1);
+check('fixed 10 % per degree: 10 min -> 9 min one degree warmer', O.devTime(10, 20, 21, { model: 'percent', percent: 10 }).time, 9);
+check('fixed rule has no range limit', O.devTime(10, 20, 30, { model: 'percent' }).status === 'ok' ? 1 : 0, 1);
+check('continuous agitation takes 15 % off', O.devTime(8, 20, 20, { continuous: true }).time, 6.8);
+
 console.log(fails ? `${fails} failure(s)` : 'all checks passed');
 process.exit(fails ? 1 : 0);

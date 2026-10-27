@@ -19,7 +19,7 @@ step; open the file in a browser or publish it with the rest of the repository.
 ## Tools so far
 
 Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`, `#table`,
-`#formats`, `#reciprocity`. The address follows the selected tab.
+`#formats`, `#reciprocity`, `#timetemp`. The address follows the selected tab.
 
 - Depth of field: near/far limits, hyperfocal distance, magnification; a sharp-range bar on a
   logarithmic distance axis and near/far-vs-focus curves for every aperture, both draggable.
@@ -35,6 +35,13 @@ Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`,
   at standard times and of all films with a reliability rating and a short recommendation. Foma's
   own tables are rated low (user tests find 1–3 stops less failure), so the user-measured
   alternatives sit next to them. Sources are linked from the page and listed in `optics.js`.
+- Time/temp: a known development time at one temperature converted to another (Ilford's
+  time/temperature compensation chart, fitted as a quadratic in log time so any time and
+  temperature work; or a fixed % per °C rule), with the Massive Dev Chart's −15 % for continuous
+  agitation, °C or °F, a time-vs-temperature chart with a draggable marker, the classic
+  nomograph (log time across, temperature up, lines of constant development at the printed
+  charts' slope of a doubling every 7.1 °C, with the chosen rule and the new temperature drawn
+  on it) and an interactive version of Ilford's table.
 
 Distances are measured from the lens (thin-lens model); camera distance scales usually measure
 from the film plane, which adds the image distance (about one focal length).
