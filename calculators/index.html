@@ -64,7 +64,8 @@
   table.rtimes th.group { white-space: normal; text-align: center; }   /* a film's name over its two columns */
   table.rtimes th.group.film { color: var(--cyan); } table.rtimes th.group.cmp { color: #d4a8c6; }
   table.rtimes thead tr + tr th:first-child { width: auto; text-align: right; }   /* the second header row starts under the film, not in the metered column */
-  table.dtt { width: max(100%, 760px); font-size: 13px; } table.dtt th:first-child { width: 110px; }
+  table.dtt { width: max(100%, 780px); font-size: 13px; } table.dtt th:first-child { width: 76px; }
+  table.dtt th, table.dtt td { padding: 4px 4px; }   /* tighter: room for an inserted column such as '24.5 °C' */
   td.short { opacity: .5; }   /* a development time under 5 min: Ilford advises against it */
   select[data-key=film] { color: var(--cyan); }   /* the two film dropdowns carry their curves' colours */
   select[data-key=film2]:not(.none) { color: #d4a8c6; }
@@ -859,13 +860,28 @@ tools.timetemp = {
     }
     document.getElementById('dtLogField').style.display = S.devChart === 'curve' ? '' : 'none';
     // the conversion table: rows are times at the known temperature, columns the temperatures
-    const cols = u.cols, rows = DEV_TIMES.includes(S.devTime) ? DEV_TIMES : [...DEV_TIMES, S.devTime].sort((a, b) => a - b);
-    const colHl = cols.includes(S.devTempTo) ? S.devTempTo : null;
+    // the known time and the new temperature are inserted as a row and a column of their own when not listed
+    const cols = u.cols.includes(S.devTempTo) ? u.cols : [...u.cols, S.devTempTo].sort((a, b) => a - b);
+    const rows = DEV_TIMES.includes(S.devTime) ? DEV_TIMES : [...DEV_TIMES, S.devTime].sort((a, b) => a - b);
+    const colHl = S.devTempTo;
     const cls = (m, T) => (m === S.devTime && T === colHl ? 'hl2' : m === S.devTime || T === colHl ? 'hl' : '') + (devInRange(T) ? '' : ' extrap');
-    document.getElementById('dtTable').replaceChildren(h('table', { class: 'dtt' },
-      h('thead', {}, h('tr', {}, h('th', {}, `at ${S.devTempFrom} ${u.sym} \\ ${u.sym}`), cols.map(T => h('th', { class: cls(null, T) }, String(T))))),
-      h('tbody', {}, rows.map(m => h('tr', {}, h('td', { class: m === S.devTime ? 'hl' : '' }, fmtMin(m)),
-        cols.map(T => { const t = devAt(m, T).time; return h('td', { class: cls(m, T) + (t < 5 ? ' short' : ''), title: t < 5 ? 'under 5 min: risk of uneven development' : null }, fmtMin(round15(t))); }))))));
+    // as in the hyperfocal table: when the known time is one of the listed ones, its row is made twice as tall,
+    // so the table keeps the height it has with the time inserted as a row of its own
+    const listed = DEV_TIMES.includes(S.devTime);
+    const table = h('table', { class: 'dtt' },
+      h('thead', {}, h('tr', {}, h('th', {}, `at ${S.devTempFrom} ${u.sym}`), cols.map(T => h('th', { class: cls(null, T) }, `${T}\u00a0${u.sym}`)))),
+      h('tbody', {}, rows.map(m => h('tr', { class: listed && m === S.devTime ? 'tall' : '' }, h('td', { class: m === S.devTime ? 'hl' : '' }, fmtMin(m)),
+        cols.map(T => { const t = devAt(m, T).time; return h('td', { class: cls(m, T) + (t < 5 ? ' short' : ''), title: t < 5 ? 'under 5 min: risk of uneven development' : null }, fmtMin(round15(t))); })))));
+    document.getElementById('dtTable').replaceChildren(table);
+    const tall = table.querySelector('tr.tall');
+    if (tall) { const other = table.tBodies[0].rows[tall.rowIndex === 1 ? 2 : 1]; tall.style.height = 2 * other.getBoundingClientRect().height + 'px'; }
+    // the same for the columns: a listed new temperature gets a column twice as wide, so the other columns keep the
+    // width they have when it is inserted as a column of its own (fixed layout: the header cells set the widths)
+    if (u.cols.includes(S.devTempTo)) {
+      const ths = table.tHead.rows[0].cells, th = ths[1 + cols.indexOf(S.devTempTo)];
+      const per = (table.getBoundingClientRect().width - ths[0].getBoundingClientRect().width) / (cols.length + 1);
+      th.style.width = 2 * per - 8 + 'px';   // minus the cell's 4 + 4 px padding
+    }
     document.getElementById('dtTableNote').textContent = `Rows: the time at the known temperature (${S.devTempFrom} ${u.sym}); columns: the same development at each temperature, rounded to 15 s like Ilford’s chart${cont ? ', already reduced 15 % for continuous agitation' : ''}. Orange italics: beyond the chart’s 18–27 °C. Faded: under 5 min.`;
   },
 };
@@ -874,9 +890,10 @@ function pointLabel(svg, x, y, text, color, box) {
   const [x0, x1, y0] = box, right = x + 8 + text.length * 6.5 < x1;   // rough width: 6.5 px per character at 12 px
   svg.append(svgEl('text', { x: right ? x + 8 : x - 8, y: y - 8 < y0 + 10 ? y + 16 : y - 8, 'text-anchor': right ? 'start' : 'end', fill: color, class: 'ptlabel' }, text));
 }
+const DRAG_REACH = 30;   // px: a press farther than this from both points drags nothing (about a fingertip)
 function drawDevTime(container) {
   const u = DEV_UNITS[S.devUnit], W = chartWidth(container), Hh = Math.round(Math.min(440, Math.max(260, W * 0.5)));
-  const x0 = 52, x1 = W - 14, y0 = 16, y1 = Hh - 40, tMin = u.min, tMax = u.max;
+  const x0 = 40, x1 = W - 14, y0 = 26, y1 = Hh - 40, tMin = u.min, tMax = u.max;   // left: up to '10:30' or '120'; top: the unit
   const X = T => x0 + (x1 - x0) * (T - tMin) / (tMax - tMin), Tinv = x => tMin + (Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * (tMax - tMin);
   const base = { ...devOpts(), continuous: false }, cont = S.devAgitation === 'continuous';
   // The time axis follows the known time (linear: from 0 to a round number above the curve; log: the powers of two
@@ -902,15 +919,18 @@ function drawDevTime(container) {
     if (T % labelEvery === 0) svg.append(svgEl('text', { x: X(T), y: y1 + 14, 'text-anchor': X(T) > x1 - 14 ? 'end' : 'middle' }, String(T)));
   }
   // time grid: labels as close as the height allows (at least 18 px apart), a fainter line halfway between them
-  const tLabel = m => Number.isInteger(m) ? m + ' min' : fmtMin(m);
+  // plain minutes, or m:ss for every label once one of them falls between minutes; the unit sits above the axis
+  let tLabel = String;
   if (log) {   // the nomograph's ticks, thinned until the labels have room
     const sets = [[0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 14, 17, 20, 24, 28, 32, 40, 48, 64, 80, 96, 128], [0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128], [0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128]]
       .map(ts => ts.filter(t => t >= yMin && t <= yMax));
     const labels = sets.find(ts => Math.min(...ts.slice(1).map((t, i) => Y(ts[i]) - Y(t))) >= 18) || sets[2];
     for (const m of sets[0]) svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(m), y2: Y(m), class: labels.includes(m) ? 'grid' : 'grid minor' }));
-    for (const m of labels) svg.append(svgEl('text', { x: x0 - 4, y: Y(m) + 4, 'text-anchor': 'end' }, tLabel(m)));
+    if (labels.some(m => !Number.isInteger(m))) tLabel = fmtMin;
+    for (const m of labels) if (Y(m) < y1 - 8) svg.append(svgEl('text', { x: x0 - 4, y: Y(m) + 4, 'text-anchor': 'end' }, tLabel(m)));   // the corner belongs to the temperature labels
   } else {
     const lStep = [0.5, 1, 2, 5, 10, 20].find(st => (y1 - y0) / (yMax / st) >= 18) || 20, sub = 2, mStep = lStep / sub;
+    if (lStep < 1) tLabel = fmtMin;
     for (let i = 1; i * mStep <= yMax + 1e-9; i++) {
       const m = i * mStep, major = i % sub === 0;
       svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(m), y2: Y(m), class: major ? 'grid' : 'grid minor' }));
@@ -918,6 +938,7 @@ function drawDevTime(container) {
     }
   }
   svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, `temperature (${u.sym})`));
+  svg.append(svgEl('text', { x: x0 - 4, y: y0 - 10, 'text-anchor': 'end' }, 'min'));   // the time unit, above its axis
   svg.append(svgEl('text', { x: x0 + 4, y: y0 + 10 }, 'development time'));
   const x20 = X(u.fromC(20));   // the standard temperature, lightly marked
   svg.append(svgEl('line', { x1: x20, x2: x20, y1: y0, y2: y1, class: 'std' }));
@@ -944,12 +965,18 @@ function drawDevTime(container) {
     svg.append(svgEl('line', { x1: x0, x2: xs, y1: ys, y2: ys, stroke: '#4fe07a', 'stroke-width': 1, 'stroke-dasharray': '3 3' }));
     svg.append(svgEl('circle', { cx: xs, cy: ys, r: 4, fill: '#4fe07a' }));
     pointLabel(svg, xs, ys, `new: ${fmtMin(r.time)} at ${S.devTempTo} ${u.sym}`, '#4fe07a', [x0, x1, y0]);
-    svg.append(svgEl('text', { x: x0 + 6, y: Math.max(y0 + 24, ys) - 6, fill: '#4fe07a' }, fmtMin(r.time)));
+    svg.append(svgEl('text', { x: x0 + 6, y: Math.max(y0 + 24, ys) - 6, fill: '#4fe07a' }, fmtMin(r.time) + ' min'));
   }
   container.replaceChildren(svg);
-  // either point can be dragged: the one nearer the press is taken (the green one counts along its whole line)
+  // either point can be dragged: the one nearer the press, if it is within reach; a press elsewhere does nothing
+  const pNew = { x: xs, y: Yc(r.time) };   // at the chart's edge when the time is off the axis
   makeDraggable(container, (x, y, phase) => {
-    if (phase === 'down') { container._handle = Math.hypot(x - known.x, y - known.y) < Math.abs(x - xs) ? 'known' : 'new'; container._dragging = true; }
+    if (phase === 'down') {
+      const dK = Math.hypot(x - known.x, y - known.y), dN = Math.hypot(x - pNew.x, y - pNew.y);
+      container._handle = Math.min(dK, dN) > DRAG_REACH ? null : dK < dN ? 'known' : 'new';
+      container._dragging = !!container._handle;
+    }
+    if (!container._handle) return;
     const T = u.round(Tinv(x));
     if (container._handle === 'known') {
       const t = Math.min(60, Math.max(1, Math.round(tInv(y) * 4) / 4));   // the time input's 0.25 min steps
@@ -957,7 +984,7 @@ function drawDevTime(container) {
       if (fields.devTempFrom) fields.devTempFrom.set(T); else S.devTempFrom = T;
     } else if (fields.devTempTo) fields.devTempTo.set(T); else S.devTempTo = T;
     update();
-  }, () => { container._dragging = false; update(); });   // released: let the axis follow the new time
+  }, () => { if (container._dragging) { container._dragging = false; update(); } });   // released: let the axis follow the new time
 }
 
 // The classic nomograph: log time across, temperature up, straight parallel lines of constant development.
@@ -1028,14 +1055,16 @@ function drawNomograph(container) {
     svg.append(svgEl('text', { x: Math.min(x1 - 20, Math.max(x0 + 20, xs)), y: y1 + 28, 'text-anchor': 'middle', fill: '#4fe07a' }, fmtMin(r.time)));
   }
   container.replaceChildren(svg);
-  // two handles: on press the nearer one is picked and kept for the whole drag. The known point moves freely
-  // (snapping to the inputs' steps); the new-temperature point slides up and down the curve.
-  const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+  // two handles: on press the nearer one is picked, if it is within reach, and kept for the whole drag; a press
+  // elsewhere does nothing. The known point moves freely (snapping to the inputs' steps); the new-temperature
+  // point slides up and down the curve.
+  const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by), xNew = X(Math.min(tMax, Math.max(tMin, r.time)));   // at the edge when off the axis
   makeDraggable(container, (x, y, phase) => {
     if (phase === 'down') {
-      const dNew = r.time >= tMin && r.time <= tMax ? dist(x, y, X(r.time), ys) : Math.abs(y - ys);
-      container._handle = dist(x, y, known.x, known.y) < dNew ? 'known' : 'new';
+      const dK = dist(x, y, known.x, known.y), dN = dist(x, y, xNew, ys);
+      container._handle = Math.min(dK, dN) > DRAG_REACH ? null : dK < dN ? 'known' : 'new';
     }
+    if (!container._handle) return;
     const T = u.round(Tinv(y));
     if (container._handle === 'known') {
       const t = Math.min(60, Math.max(1, Math.round(tInv(x) * 4) / 4));   // the time input's 0.25 min steps
