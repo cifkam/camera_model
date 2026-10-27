@@ -36,8 +36,7 @@ view) and a button that tilts the lens so the hinge lands on the ground.
 - grey / red dashed: lens coverage cone (image circle at infinity), behind the lens to the film and in front of it
 
 The legend lists the on-axis film distance, the angle of the plane of sharp focus, the part of that plane
-within the frame, the depth of field on the axis, the vertical extent of the sharp band at a few
-distances, the Scheimpflug and hinge positions and the tilt that would put the hinge on the ground.
+within the frame, the depth of field on the axis and the Scheimpflug and hinge positions.
 
 ## Optics
 

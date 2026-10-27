@@ -137,7 +137,7 @@ const P = {
   rearTilt: 0,  rearSwing: 0,  rearRise: 0,  rearShift: 0,
   tiltPivot: 'axis',   // 'axis' (about standard centre) or 'base' (about bottom edge)
   cameraHeight: 1.2,   // optical axis height above ground, m
-  extent: 25,          // scene extent, m (to each side and in front of the lens)
+  extent: 40,          // scene extent, m (to each side and in front of the lens); the slider maximum
   background: 'dark',      // one of THEMES: background + fog, ground and grid colours as a matched set
   fnumber: 11,
   cocMode: 'from print',   // circle of confusion from print size + viewing, or 'manual'
@@ -149,6 +149,7 @@ const P = {
   imageCircle: 220,        // lens image circle at infinity, mm (coverage / vignetting check)
   showCoverage: true,
   showCoverageCone: false,   // the lens's coverage cone in object space and its section with the plane of sharp focus
+  showHyperfocal: true,      // a point on the lens axis at the hyperfocal distance (untilted lens formula)
   showParallel: false,       // planes parallel to the film, each drawn as the rectangle that projects onto the film gate
   showFov: true, showSharpArea: true, showFullPlane: false,
   showPlanes: true, showLines: false, showGround: true,
@@ -167,7 +168,7 @@ const THEMES = {
 const COL = {
   posf: 0x4fe07a, posfVirtual: 0xff8a3d, film: 0xffffff, lens: 0x4fa8ff,
   scheimpflug: 0xff4fd8, hinge: 0xffd84f, axis: 0x9ad8ff, fov: 0xc9a0ff, dof: 0x3ee6ff, vignette: 0xff5252,
-  parallel: 0xd8c08a,
+  parallel: 0xd8c08a, hyperfocal: 0xffb347,
 };
 
 // Circle of confusion on film (mm): tolerable blur on the print, divided by the enlargement.
@@ -836,7 +837,7 @@ function update() {
   if (P.showDof && dofFaces.length) drawFramedPolys(dyn, dofFaces, COL.dof, 0.16, COL.dof, posfBox);
   const ivs = rayDirs.map(d => focusInterval(B, filmL, f, k, d));
   const axisIv = focusInterval(B, filmL, f, k, nl);
-  const dofInfo = { farInfinite: ivs.some(iv => iv && !Number.isFinite(iv.tFar)), missing: ivs.filter(iv => !iv).length };
+  const dofInfo = { missing: ivs.filter(iv => !iv).length };
   if (P.showPlanes) {
     // a rectangle in each standard's own plane, centred on it, with the format's aspect ratio and
     // 5× the frame width (≈ 1 m for 4x5), so the two patches are identical whatever the pitch
@@ -856,6 +857,14 @@ function update() {
   if (Number.isFinite(tFocus) && tFocus > 0) {
     const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), mat(COL.axis, { basic: true }));
     dot.position.copy(axisEnd); dyn.add(dot);
+  }
+  // hyperfocal distance: a point on the lens axis at H from the lens (untilted lens formula, as in the readout)
+  const Hf = f * f / (P.fnumber * coc * MM) + f;
+  if (P.showHyperfocal && Hf < tExit) {
+    // a bit larger than the focus point, and drawn over everything so the translucent volumes do not tint it
+    const hp = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 12), mat(COL.hyperfocal, { basic: true, depthTest: false, opacity: 0.99 }));
+    hp.renderOrder = 10;   // translucent (0.99) so it is drawn in the last pass, after the volumes, not before them
+    hp.position.copy(Cl).addScaledVector(nl, Hf); dyn.add(hp);
   }
 
   // Scheimpflug line (film ∩ lens plane) and hinge line (PoSF ∩ front focal plane)
@@ -895,15 +904,13 @@ function update() {
   }
   txt += `${sw(nVig ? COL.vignette : 0x9a9a9a)}Coverage: image circle ${P.imageCircle} mm (half-angle ${fmt(THREE.MathUtils.radToDeg(covAngle), 1)}°): ` +
     (nVig ? `<span class="warn">${nVig} frame corner${nVig > 1 ? 's' : ''} outside → vignetting</span>` : 'all frame corners inside') + `\n`;
-  const H = f * f / (P.fnumber * coc * MM) + f;    // hyperfocal distance of the untilted lens
   txt += `${sw(COL.dof)}<b>Depth of field</b> f/${P.fnumber}, CoC ${fmt(coc, 3)} mm` +
     (P.cocMode === 'manual' ? '' :
       ` (${fmt(printBlur, 2)} mm on a ${P.printLong} cm print viewed from ${P.viewDist} cm, ${fmt(enlargement, 1)}× enlargement)`) + `\n`;
   txt += axisIv
-    ? `   on the lens axis ${fmt(axisIv.tNear)} m – ${Number.isFinite(axisIv.tFar) ? fmt(axisIv.tFar) + ' m' : '∞'}   (hyperfocal H = ${fmt(H, 1)} m)\n`
+    ? `   on the lens axis ${fmt(axisIv.tNear)} m – ${Number.isFinite(axisIv.tFar) ? fmt(axisIv.tFar) + ' m' : '∞'}   (${sw(COL.hyperfocal)}hyperfocal H = ${fmt(Hf, 1)} m)\n`
     : `   nothing acceptably sharp along the lens axis\n`;
   if (dofInfo.missing) txt += `   ${dofInfo.missing} frame corner${dofInfo.missing > 1 ? 's' : ''} look past the DoF wedge: nothing sharp there at any distance\n`;
-  if (dofInfo.farInfinite) txt += `   far limit at ∞ for part of the frame; volume cut at the scene extent\n`;
   if (showParallel)
     txt += `${sw(COL.parallel)}Planes parallel to the film every ${parallelSpacing} m: anything lying in them is imaged as a similar rectangle (no keystoning)\n`;
   txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane`;
@@ -1002,6 +1009,7 @@ fV.add(P, 'showDofPlanes').name('extended near/far limit planes').domElement.cla
 fV.add(P, 'showFov').name('field of view rays');
 fV.add(P, 'showCoverage').name('lens coverage on film');
 fV.add(P, 'showCoverageCone').name('lens coverage cone').domElement.classList.add('divider');
+fV.add(P, 'showHyperfocal').name('hyperfocal distance (point on the axis)');
 const parallelCtrl = fV.add(P, 'showParallel').name('planes parallel to film (no keystone)');
 fV.add(P, 'showPlanes').name('extended film & lens planes');
 const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge lines');

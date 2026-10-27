@@ -49,7 +49,7 @@ blur ≤ circle of confusion c gives |1 − s₀| ≤ k with k = c·N/f. That ho
 copies of the film plane scaled by 1/(1 ± k) about the lens centre; their images through the
 lens are the near and far limit planes. Along a single ray from the lens centre s₀ is affine in
 1/t, so each ray's in-focus stretch is a closed-form interval, which is what the slab uses
-(far limit at infinity is cut at the scene extent and the readout says so).
+(a far limit at infinity is cut at the scene extent).
 
 The circle of confusion is derived from the print by default: tolerable blur on the print =
 viewing distance / eye resolution (default 1/1500 rad, about 2.3 arcmin), divided by the

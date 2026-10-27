@@ -515,23 +515,12 @@ function update() {
   txt += g.axisIv
     ? `   on the lens axis ${fmt(g.axisIv.near)} m – ${Number.isFinite(g.axisIv.far) ? fmt(g.axisIv.far) + ' m' : '∞'}   (${sw(COL.hyperfocal)}hyperfocal H = ${fmt(Hf, 1)} m)\n`
     : `   nothing acceptably sharp along the lens axis\n`;
-  if (dofPoly.length && nearHp && farHp && frustumHp) {
-    // vertical sharp band at a few distances in front of the lens
-    const bands = [];
-    for (const x of [1, 2, 5, 10, 20, 50]) {
-      const r = clipSegment(V(x, yMin), V(x, yMax), frustumHp.concat([focalHp, nearHp, farHp]));
-      if (r) bands.push(`${x} m: ${fmt(Math.min(r[0].y, r[1].y), 2)}–${fmt(Math.max(r[0].y, r[1].y), 2)} m high`);
-    }
-    if (bands.length) txt += `   sharp band in frame at ${bands.join(', ')}\n`;
-  }
   txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane`;
   if (viewCam) {
     txt += `\n${sw(COL.scheimpflug)}Scheimpflug point (film ∩ lens): ${g.scheimpflug ? `(${fmt(g.scheimpflug.x, 2)}, ${fmt(g.scheimpflug.y, 2)}) m` : 'at infinity (planes parallel)'}\n`;
     txt += `${sw(COL.hinge)}Hinge: distance from lens J = ${Number.isFinite(g.J) ? fmt(g.J) + ' m' : '∞'}` +
            (g.lensFilmAngle > 1e-6 ? `  (f / sin α = ${fmt(f / Math.sin(g.lensFilmAngle))} m)` : '') +
            (g.hinge ? `, ${g.hinge.y < 0 ? fmt(-g.hinge.y) + ' m below' : fmt(g.hinge.y) + ' m above'} the ground` : '');
-    const hGround = C.y - 0;   // lens height above the ground along the film-parallel direction (untilted film)
-    if (f < hGround) txt += `\n   lens tilt for a hinge at ground level (film vertical): ${fmt(Math.asin(f / hGround) / DEG, 2)}°`;
   }
   document.getElementById('infoBody').innerHTML = txt;
 }
