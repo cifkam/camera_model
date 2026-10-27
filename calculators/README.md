@@ -38,10 +38,11 @@ Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`,
 - Time/temp: a known development time at one temperature converted to another (Ilford's
   time/temperature compensation chart, fitted as a quadratic in log time so any time and
   temperature work; or a fixed % per °C rule), with the Massive Dev Chart's −15 % for continuous
-  agitation, °C or °F, a time-vs-temperature chart with a draggable marker, the classic
-  nomograph (log time across, temperature up, lines of constant development at the printed
-  charts' slope of a doubling every 7.1 °C, with the chosen rule and the new temperature drawn
-  on it) and an interactive version of Ilford's table.
+  agitation, °C or °F, one chart chosen by a dropdown (the classic nomograph by default: log
+  time across, temperature up, lines of constant development at the printed charts' slope of a
+  doubling every 7.1 °C, with the chosen rule and the new temperature drawn on it; or a
+  time-vs-temperature curve with the same draggable points) and an interactive version of Ilford's
+  table.
 
 Distances are measured from the lens (thin-lens model); camera distance scales usually measure
 from the film plane, which adds the image distance (about one focal length).

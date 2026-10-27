@@ -38,6 +38,7 @@
   .unit { color: var(--muted); min-width: 26px; }
   .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
   .warn { color: #ffb347; }   /* a caution: low reliability, vignetting, no data */
+  .note.hold { min-height: 2.5em; min-height: 2lh; }   /* keeps two lines of space (the two warnings can show together), so the cards below do not jump when a warning comes or goes */
   .extrap { color: #ffb347; font-style: italic; }   /* a value extrapolated beyond its data sheet: orange like the other cautions, italic to tell it apart */
   td.hl.warn, td.hl2.warn, td.hlm.warn, td.hlc.warn, td.hl.extrap, td.hl2.extrap, td.hlm.extrap, td.hlc.extrap { color: #ffcf8a; text-shadow: 0 0 2px #000; }   /* a lighter orange on a highlighted row */
   td a, .note a { color: var(--accent); }
@@ -81,6 +82,8 @@
   svg text { fill: var(--text); font-size: 13px; }   /* was var(--muted) */   /* the viewBox is sized in pixels, so this is the real size on screen */
   svg .axis { stroke: #9096a0; }
   svg .grid { stroke: #474b53; }
+  svg .short { fill: #c2651a; opacity: .14; }   /* the band of development times under 5 min, which Ilford advises against */
+  svg .outside { fill: #8f7bd8; opacity: .12; }   /* temperatures outside the 18–27 °C of Ilford’s chart, where its rule is extrapolated */
   @media print { header nav, header a, aside { display: none; } body { background: #fff; color: #000; } .card { border-color: #999; background: #fff; } }
 </style>
 </head>
@@ -109,7 +112,7 @@ const S = {
   chartMin: 0.3, chartMax: 100,   // m, distance axes of the DoF charts
   targetFormat: 'APS-C', eqRef: 'diagonal', sceneDist: 3,   // formats tool: the format compared with, the dimension compared, subject distance (m)
   film: 'Ilford HP5+', film2: 'none', meteredTime: 10, rcAperture: 'none', customP: 1.3, customThreshold: 1, rcLog: true, rcMax: 60,   // reciprocity tool (times in s; rcMax = span of the chart's metered axis)
-  devTime: 8, devTempFrom: 20, devTempTo: 24, devUnit: 'C', devModel: 'ilford', devPercent: 10, devAgitation: 'intermittent',   // development time tool (time in min, temperatures in devUnit)
+  devTime: 8, devTempFrom: 20, devTempTo: 24, devUnit: 'C', devModel: 'ilford', devPercent: 10, devAgitation: 'intermittent', devChart: 'nomograph',   // development time tool (time in min, temperatures in devUnit)
   tool: 'dof',
 };
 const DEFAULTS = { ...S };   // before the stored settings are applied, for the reset links
@@ -254,8 +257,8 @@ function svgPoint(svg, evt) {   // client -> SVG user coordinates
 // Drag anywhere over a chart: onDrag(x, y, phase) in the SVG's user coordinates, fired on press
 // (phase 'down') and on every move while the button is held ('move'). The listeners sit on the container, which survives the
 // redraws (each update replaces the <svg>); only the callback is refreshed per draw.
-function makeDraggable(container, onDrag) {
-  container._onDrag = onDrag;
+function makeDraggable(container, onDrag, onDragEnd = null) {
+  container._onDrag = onDrag; container._onDragEnd = onDragEnd;
   if (container._dragBound) return;
   container._dragBound = true;
   let active = false;
@@ -266,7 +269,7 @@ function makeDraggable(container, onDrag) {
     try { container.setPointerCapture(e.pointerId); } catch (err) { /* keeps working without capture */ }
   });
   container.addEventListener('pointermove', e => { if (active) fire(e, 'move'); });
-  const end = () => { active = false; };
+  const end = () => { if (active && container._onDragEnd) container._onDragEnd(); active = false; };
   container.addEventListener('pointerup', end);
   container.addEventListener('pointercancel', end);
 }
@@ -796,11 +799,12 @@ tools.timetemp = {
   },
   render(root) {
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'dtStats' }),
-      h('p', { class: 'note', id: 'dtNote', style: 'white-space: pre-line' }), h('p', { class: 'note warn', id: 'dtWarn', style: 'white-space: pre-line' })));
-    root.append(h('div', { class: 'card' }, h('h2', {}, 'Time vs temperature'), h('div', { id: 'dtChart' }),
-      h('p', { class: 'note' }, 'Cyan: the known time carried to every temperature by the chosen rule, dashed beyond the 18–27 °C of Ilford’s chart; pink: the same with continuous agitation. Orange: 5 min, under which Ilford warns of uneven development. Drag the green marker to change the new temperature.')));
-    root.append(h('div', { class: 'card' }, h('h2', {}, 'Nomograph'), h('div', { id: 'dtNomo' }),
-      h('p', { class: 'note' }, 'The printed time/temperature charts: time across on a log scale, temperature up, and a family of lines of constant development (grey, at the printed charts’ slope: the time doubles every 7.1 °C, 9.3 % per °C). Cyan: the chosen rule through the known point, which is why Ilford’s curve bends slightly: steeper near 20 °C, flatter when warm; pink: with continuous agitation. Blue: the standard 20 °C / 68 °F. Green: the new temperature, with the time read off the bottom. Drag the cyan point anywhere to set the known time and temperature, the green one up or down for the new temperature.')));
+      h('p', { class: 'note', id: 'dtNote', style: 'white-space: pre-line' }), h('p', { class: 'note warn hold', id: 'dtWarn', style: 'white-space: pre-line' })));
+    // one chart at a time, chosen by the dropdown above it: the nomograph (default) or the time-vs-temperature curve
+    root.append(h('div', { class: 'card' }, h('h2', { id: 'dtChartTitle' }),
+      h('div', { class: 'inline-fields', style: 'margin: 0 0 8px' },
+        selectField({ label: 'chart', key: 'devChart', options: ['nomograph', 'curve'], labels: k => k === 'curve' ? 'time vs temperature' : 'nomograph' })),
+      h('div', { id: 'dtChart' }), h('p', { class: 'note', id: 'dtChartNote' })));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Conversion table'), h('div', { class: 'tablewrap', id: 'dtTable' }),
       h('p', { class: 'note', id: 'dtTableNote' })));
   },
@@ -821,8 +825,16 @@ tools.timetemp = {
     if (r.time < 5) warns.push('Under 5 min: Ilford advises against it, development may be uneven. Use a cooler developer or a higher dilution.');
     if (r.status === 'extrapolated') warns.push(`Beyond the 18–27 °C Ilford’s chart covers: extrapolated from its curve.`);
     document.getElementById('dtWarn').textContent = warns.join('\n');
-    drawDevTime(document.getElementById('dtChart'));
-    drawNomograph(document.getElementById('dtNomo'));
+    const chart = document.getElementById('dtChart');
+    if (S.devChart === 'curve') {
+      document.getElementById('dtChartTitle').textContent = 'Time vs temperature';
+      drawDevTime(chart);
+      document.getElementById('dtChartNote').textContent = 'Cyan: the known time carried to every temperature by the chosen rule, dashed beyond the 18–27 °C of Ilford’s chart (shaded violet); pink: the same with continuous agitation. Shaded orange: under 5 min, where Ilford warns of uneven development. Drag the cyan point to set the known time and temperature, the green marker for the new temperature.';
+    } else {
+      document.getElementById('dtChartTitle').textContent = 'Nomograph';
+      drawNomograph(chart);
+      document.getElementById('dtChartNote').textContent = 'The printed time/temperature charts: time across on a log scale, temperature up, and a family of lines of constant development (grey, at the printed charts’ slope: the time doubles every 7.1 °C, 9.3 % per °C). Cyan: the chosen rule through the known point, which is why Ilford’s curve bends slightly: steeper near 20 °C, flatter when warm; pink: with continuous agitation. Blue: the standard 20 °C / 68 °F. Green: the new temperature, with the time read off the bottom. Shaded violet: outside the 18–27 °C of Ilford’s chart, where its rule is extrapolated (the curve is dashed there). Shaded orange: under 5 min, where Ilford warns of uneven development. Drag the cyan point anywhere to set the known time and temperature, the green one up or down for the new temperature.';
+    }
     // the conversion table: rows are times at the known temperature, columns the temperatures
     const cols = u.cols, rows = DEV_TIMES.includes(S.devTime) ? DEV_TIMES : [...DEV_TIMES, S.devTime].sort((a, b) => a - b);
     const colHl = cols.includes(S.devTempTo) ? S.devTempTo : null;
@@ -839,9 +851,19 @@ function drawDevTime(container) {
   const x0 = 52, x1 = W - 14, y0 = 16, y1 = Hh - 40, tMin = u.min, tMax = u.max;
   const X = T => x0 + (x1 - x0) * (T - tMin) / (tMax - tMin), Tinv = x => tMin + (Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * (tMax - tMin);
   const base = { ...devOpts(), continuous: false }, cont = S.devAgitation === 'continuous';
-  const top = devAt(S.devTime, tMin, base).time * 1.05, step = top <= 10 ? 1 : top <= 20 ? 2 : top <= 50 ? 5 : top <= 100 ? 10 : 20, yMax = Math.ceil(top / step) * step;
-  const Y = m => y1 - (y1 - y0) * m / yMax;
+  // The time axis follows the known time, but stays as it was while a point is dragged: if it rescaled under the
+  // pointer, each move would land on a different time than the one the pointer sits on.
+  const top = devAt(S.devTime, tMin, base).time * 1.05, step = top <= 10 ? 1 : top <= 20 ? 2 : top <= 50 ? 5 : top <= 100 ? 10 : 20;
+  const yMax = container._dragging ? container._yMax : Math.ceil(top / step) * step;
+  container._yMax = yMax;
+  const Y = m => y1 - (y1 - y0) * m / yMax, tInv = y => yMax * (y1 - Math.min(y1, y)) / (y1 - y0);   // above the plot still counts: longer times
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  if (yMax > 5) svg.append(svgEl('rect', { x: x0, y: Y(5), width: x1 - x0, height: y1 - Y(5), class: 'short' }));   // under 5 min: uneven development
+  if (S.devModel === 'ilford') {   // outside the chart's 18–27 °C the rule is extrapolated
+    const lo = X(Math.max(tMin, u.fromC(O.DEV_TEMP.range[0]))), hi = X(Math.min(tMax, u.fromC(O.DEV_TEMP.range[1])));
+    if (lo > x0) svg.append(svgEl('rect', { x: x0, y: y0, width: lo - x0, height: y1 - y0, class: 'outside' }));
+    if (hi < x1) svg.append(svgEl('rect', { x: hi, y: y0, width: x1 - hi, height: y1 - y0, class: 'outside' }));
+  }
   const tick = u.step < 1 ? 1 : 2, labelEvery = (x1 - x0) / ((tMax - tMin) / tick) >= 30 ? tick : 2 * tick;
   for (let T = Math.ceil(tMin / tick) * tick; T <= tMax; T += tick) {
     svg.append(svgEl('line', { x1: X(T), x2: X(T), y1: y0, y2: y1, class: 'grid' }));
@@ -853,7 +875,6 @@ function drawDevTime(container) {
   }
   svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, `temperature (${u.sym})`));
   svg.append(svgEl('text', { x: x0 + 4, y: y0 + 10 }, 'development time'));
-  if (yMax > 5) svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(5), y2: Y(5), stroke: '#ffb347', 'stroke-dasharray': '4 4', opacity: .8 }));
   const curve = (opts, color, width) => {   // one path per run, dashed where the rule is extrapolated
     const n = 160; let run = null;
     const flush = () => { if (run) svg.append(svgEl('path', { d: run.d, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-linejoin': 'round', 'stroke-dasharray': run.ext ? '6 4' : null })); run = null; };
@@ -867,12 +888,23 @@ function drawDevTime(container) {
   };
   if (cont) curve(devOpts(), '#d4a8c6', 1.6);
   curve(base, '#3ee6ff', 2.2);
-  svg.append(svgEl('circle', { cx: X(S.devTempFrom), cy: Y(Math.min(yMax, S.devTime)), r: 4, fill: '#3ee6ff' }));   // the known point
+  const known = { x: X(S.devTempFrom), y: Y(Math.min(yMax, S.devTime)) };
+  svg.append(svgEl('circle', { cx: known.x, cy: known.y, r: 4, fill: '#3ee6ff' }));   // the known point
   const r = devAt(S.devTime, S.devTempTo), xs = X(Math.min(tMax, Math.max(tMin, S.devTempTo)));
   svg.append(svgEl('line', { x1: xs, x2: xs, y1: y0, y2: y1, stroke: '#4fe07a', 'stroke-width': 1.5 }));
   svg.append(svgEl('circle', { cx: xs, cy: Y(Math.min(yMax, r.time)), r: 4, fill: '#4fe07a' }));
   container.replaceChildren(svg);
-  makeDraggable(container, x => { const T = u.round(Tinv(x)); if (fields.devTempTo) fields.devTempTo.set(T); else S.devTempTo = T; update(); });
+  // either point can be dragged: the one nearer the press is taken (the green one counts along its whole line)
+  makeDraggable(container, (x, y, phase) => {
+    if (phase === 'down') { container._handle = Math.hypot(x - known.x, y - known.y) < Math.abs(x - xs) ? 'known' : 'new'; container._dragging = true; }
+    const T = u.round(Tinv(x));
+    if (container._handle === 'known') {
+      const t = Math.min(60, Math.max(1, Math.round(tInv(y) * 4) / 4));   // the time input's 0.25 min steps
+      if (fields.devTime) fields.devTime.set(t); else S.devTime = t;
+      if (fields.devTempFrom) fields.devTempFrom.set(T); else S.devTempFrom = T;
+    } else if (fields.devTempTo) fields.devTempTo.set(T); else S.devTempTo = T;
+    update();
+  }, () => { container._dragging = false; update(); });   // released: let the axis follow the new time
 }
 
 // The classic nomograph: log time across, temperature up, straight parallel lines of constant development.
@@ -885,6 +917,12 @@ function drawNomograph(container) {
   const Tinv = y => TMin + (y1 - Math.min(y1, Math.max(y0, y))) / (y1 - y0) * (TMax - TMin);
   const tInv = x => Math.exp(Math.log(tMin) + (Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * Math.log(tMax / tMin));
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  svg.append(svgEl('rect', { x: x0, y: y0, width: X(5) - x0, height: y1 - y0, class: 'short' }));   // under 5 min: uneven development
+  if (S.devModel === 'ilford') {   // outside the chart's 18–27 °C the rule is extrapolated
+    const lo = Y(Math.max(TMin, u.fromC(O.DEV_TEMP.range[0]))), hi = Y(Math.min(TMax, u.fromC(O.DEV_TEMP.range[1])));
+    if (lo < y1) svg.append(svgEl('rect', { x: x0, y: lo, width: x1 - x0, height: y1 - lo, class: 'outside' }));
+    if (hi > y0) svg.append(svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: hi - y0, class: 'outside' }));
+  }
   // grid: time ticks as on the printed chart, thinned until the labels have room; temperature every degree
   const tickSets = [[1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 14, 17, 20, 24, 28, 32, 40, 48, 64], [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64], [1, 2, 4, 8, 16, 32, 64]];
   const minGap = ts => Math.min(...ts.slice(1).map((t, i) => X(t) - X(ts[i])));
