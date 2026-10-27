@@ -50,5 +50,22 @@ check('50 mm on 35 mm: horizontal angle 39.6°', deg(aov.h), 39.60, 1e-3);
 check('50 mm on 35 mm: vertical angle 27.0°', deg(aov.v), 26.99, 1e-3);
 check('scene width of 50 mm on 35 mm at 3 m', O.sceneCoverage('35 mm', 50, 3000).width, 36 * 2950 / 50);
 
+// reciprocity failure
+const rc = (name, tm) => O.reciprocity(O.filmByName(name), tm);
+check('HP5+ 10 s -> 20.4 s (Ilford example)', rc('Ilford HP5+', 10).tc, 20.4, 2e-3);
+check('HP5+ 1 s: no correction', rc('Ilford HP5+', 1).tc, 1);
+check('Tri-X 10 s -> 50 s', rc('Kodak Tri-X 400', 10).tc, 50);
+check('Tri-X 100 s -> 1200 s', rc('Kodak Tri-X 400', 100).tc, 1200);
+check('Tri-X 30 s: log-log between (10, 50) and (100, 1200)', rc('Kodak Tri-X 400', 30).tc, Math.exp(Math.log(50) + (Math.log(30) - Math.log(10)) / Math.log(10) * Math.log(1200 / 50)));
+check('Tri-X 1000 s is extrapolated', rc('Kodak Tri-X 400', 1000).status === 'extrapolated' ? 1 : 0, 1);
+check('T-Max 100 100 s -> 200 s', rc('Kodak T-Max 100', 100).tc, 200);
+check('Fomapan 100 1 s -> 2 s', rc('Fomapan 100', 1).tc, 2);
+check('Acros II 60 s: no correction', rc('Fujifilm Neopan 100 Acros II', 60).tc, 60);
+check('Acros II 200 s: +1/2 stop', rc('Fujifilm Neopan 100 Acros II', 200).tc, 200 * Math.SQRT2);
+check('Acros II 2000 s: no data', rc('Fujifilm Neopan 100 Acros II', 2000).status === 'nodata' ? 1 : 0, 1);
+check('Portra 400 5 s: no data', rc('Kodak Portra 400', 5).status === 'nodata' ? 1 : 0, 1);
+check('custom p = 1 is the identity', O.reciprocity({ model: 'power', p: 1, threshold: 1 }, 30).tc, 30);
+check('stops of a 4x correction', O.reciprocity({ model: 'power', p: 2, threshold: 1 }, 4).stops, 2);
+
 console.log(fails ? `${fails} failure(s)` : 'all checks passed');
 process.exit(fails ? 1 : 0);

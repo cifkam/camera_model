@@ -69,13 +69,65 @@
   // image size × (s − f) / f, from the thin-lens magnification
   const sceneCoverage = (fmt, f, s) => ({ width: FORMATS[fmt][0] * (s - f) / f, height: FORMATS[fmt][1] * (s - f) / f });
 
+  // Reciprocity failure (Schwarzschild effect): the corrected exposure time tc for a metered time tm.
+  // Models: 'power' tc = tm^p above a threshold (Ilford's method); 'table' points from a data sheet,
+  // interpolated in log-log and extrapolated beyond the last point with its slope; 'step' a fixed
+  // factor between two times; 'none' no correction up to a time and no data beyond it.
+  // Sources: Harman "Film Reciprocity Failure Compensation" (Dec 2023) for the Ilford / Kentmere
+  // factors (its example: HP5+ 10 s -> 20.4 s); Kodak F-4016 (T-Max 100), F-4043 (T-Max 400),
+  // F-4017 (Tri-X) "Adjustments for Long and Short Exposures"; Foma data sheets ("Schwarzschild
+  // effect", lengthening of exposure 1 s / 10 s / 100 s); Fujifilm Neopan 100 Acros II data sheet;
+  // Kodak E-4050 (Portra 400) and E-4046 (Ektar 100): "no compensation from 1/10,000 s to 1 s, for
+  // longer exposures make tests".
+  const ilford = (name, p) => ({ name: 'Ilford ' + name, maker: 'Ilford', model: 'power', p, threshold: 1,
+                                 source: 'Harman reciprocity sheet (2023)', url: 'https://www.ilfordphoto.com/wp/wp-content/uploads/2024/05/Reciprocity-Failure-Compensation-v2.pdf', verified: true });
+  const FILMS = [
+    ilford('Pan F+', 1.33), ilford('FP4+', 1.26), ilford('HP5+', 1.31), ilford('Delta 100', 1.26), ilford('Delta 400', 1.41),
+    ilford('Delta 3200', 1.33), ilford('SFX 200', 1.43), ilford('XP2 Super', 1.31), ilford('Ortho Plus', 1.25),
+    { ...ilford('Kentmere 100', 1.26), name: 'Kentmere 100', maker: 'Kentmere' }, { ...ilford('Kentmere 400', 1.30), name: 'Kentmere 400', maker: 'Kentmere' },
+    { name: 'Kodak T-Max 100', maker: 'Kodak', model: 'table', noneBelow: 0.1, points: [[1, 2 ** (1 / 3)], [10, 15], [100, 200]],
+      source: 'Kodak F-4016 (2016)', url: 'https://business.kodakmoments.com/sites/default/files/files/resources/f4016_TMax_100.pdf', verified: true },
+    { name: 'Kodak T-Max 400', maker: 'Kodak', model: 'table', noneBelow: 1, points: [[10, 10 * 2 ** (1 / 3)], [100, 300]],
+      source: 'Kodak F-4043', url: 'https://business.kodakmoments.com/sites/default/files/files/products/f4043_tmax_400.pdf', verified: true },
+    { name: 'Kodak Tri-X 400', maker: 'Kodak', model: 'table', noneBelow: 0.1, points: [[1, 2], [10, 50], [100, 1200]],
+      source: 'Kodak F-4017', url: 'https://business.kodakmoments.com/sites/default/files/files/resources/f4017_TriX.pdf', verified: true },
+    { name: 'Fomapan 100', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 2], [10, 80], [100, 1600]],
+      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-100', verified: true },
+    { name: 'Fomapan 200', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 3], [10, 90], [100, 1800]],
+      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-200', verified: true },
+    { name: 'Fomapan 400', maker: 'Foma', model: 'table', noneBelow: 0.5, points: [[1, 1.5], [10, 60], [100, 800]],
+      source: 'Foma data sheet', url: 'https://www.foma.cz/en/fomapan-400', verified: true },
+    { name: 'Fujifilm Neopan 100 Acros II', maker: 'Fujifilm', model: 'step', noneBelow: 120, factor: Math.SQRT2, upTo: 1000,
+      source: 'Fujifilm data sheet', url: 'https://asset.fujifilm.com/www/us/files/2020-08/ed6acf9a3aeefed477d0f169df7c8457/films_neopan100acros2_120_01.pdf', verified: true },
+    { name: 'Kodak Portra 400', maker: 'Kodak', model: 'none', upTo: 1, source: 'Kodak E-4050 ("make tests" beyond 1 s)', url: 'https://business.kodakmoments.com/sites/default/files/files/products/e4050_portra_400.pdf', verified: true },
+    { name: 'Kodak Ektar 100', maker: 'Kodak', model: 'none', upTo: 1, source: 'Kodak E-4046 ("make tests" beyond 1 s)', url: 'https://business.kodakmoments.com/sites/default/files/files/products/e4046_ektar_100.pdf', verified: true },
+  ];
+  const filmByName = name => FILMS.find(f => f.name === name);
+  // returns { tc, stops, status } with status 'none' (no correction), 'ok', 'extrapolated' or 'nodata'
+  function reciprocity(film, tm) {
+    const done = (tc, status) => ({ tc, stops: Number.isFinite(tc) ? Math.log2(tc / tm) : NaN, status });
+    if (film.model === 'power') return tm <= film.threshold ? done(tm, 'none') : done(Math.pow(tm, film.p), 'ok');
+    if (film.model === 'step') return tm < film.noneBelow ? done(tm, 'none') : tm <= film.upTo ? done(tm * film.factor, 'ok') : done(NaN, 'nodata');
+    if (film.model === 'none') return tm <= film.upTo ? done(tm, 'none') : done(NaN, 'nodata');
+    // table: log-log interpolation from the last "no correction" time through the data points
+    if (tm <= film.noneBelow) return done(tm, 'none');
+    const pts = [[film.noneBelow, film.noneBelow], ...film.points];
+    let i = pts.findIndex(p => p[0] >= tm);
+    const extrapolated = i < 0;
+    if (extrapolated) i = pts.length - 1;
+    const [t0, c0] = pts[i - 1], [t1, c1] = pts[i];
+    const u = (Math.log(tm) - Math.log(t0)) / (Math.log(t1) - Math.log(t0));
+    return done(Math.exp(Math.log(c0) + u * (Math.log(c1) - Math.log(c0))), extrapolated ? 'extrapolated' : 'ok');
+  }
+
   // Scheimpflug: lens tilt (rad) that puts the hinge line at distance J below the lens
   const tiltForHinge = (f, J) => Math.asin(f / J);
   const hingeDistance = (f, tiltRad) => f / Math.sin(tiltRad);
 
   const Optics = { FORMATS, IMAGE_CIRCLE, APERTURES, diagonal, cocFromPrint, hyperfocal, dof, extensionFor,
                    subjectFor, bellows, angleOfView, focusSpread, tiltForHinge, hingeDistance,
-                   measure, cropFactor, equivalentFocal, equivalentAperture, anglesOfView, sceneCoverage };
+                   measure, cropFactor, equivalentFocal, equivalentAperture, anglesOfView, sceneCoverage,
+                   FILMS, filmByName, reciprocity };
   root.Optics = Optics;
   if (typeof module !== 'undefined' && module.exports) module.exports = Optics;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
