@@ -74,6 +74,9 @@
   .results .rowlabel { color: var(--muted); font-size: 13px; text-align: right; padding-right: 6px; }
   .results .rowlabel b { color: var(--text); font-weight: 600; display: block; }
   @media (max-width: 560px) { .results.two { grid-template-columns: 1fr; } .results .rowlabel { text-align: left; margin-top: 6px; } }
+  /* phones: the text keeps its padding, the charts run across the card's padding and border and most of the page's
+     12 px padding, stopping 6 px short of the screen edges so the axis labels are not flush with them */
+  @media (max-width: 560px) { #dofBar, #dofCurves, #rcChart, #dtChart { margin: 0 -21px; } }
   .stat { background: var(--panel2); border-radius: 6px; padding: 8px 12px; min-width: 120px; }
   .stat .k { color: var(--muted); font-size: 12px; }
   .stat .v { font-size: 18px; font-variant-numeric: tabular-nums; }
@@ -268,6 +271,8 @@ function makeDraggable(container, onDrag, onDragEnd = null) {
   const fire = (e, phase) => { const svg = container.querySelector('svg'); if (svg) { const p = svgPoint(svg, e); container._onDrag(p.x, p.y, phase); } };
   container.addEventListener('pointerdown', e => {
     if (e.button !== 0) return;
+    // preventDefault below keeps the focus where it was: release a focused input, or a phone reopens its keyboard
+    const f = document.activeElement; if (f && f !== document.body && f.blur) f.blur();
     active = true; fire(e, 'down'); e.preventDefault();
     try { container.setPointerCapture(e.pointerId); } catch (err) { /* keeps working without capture */ }
   });
@@ -768,6 +773,19 @@ const DEV_UNITS = {
   F: { sym: '°F', min: 57, max: 86, step: 1, cols: [60, 62, 64, 66, 68, 70, 72, 74, 75, 77, 80], toC: t => (t - 32) * 5 / 9, fromC: t => t * 9 / 5 + 32, round: t => Math.round(t) },
 };
 const DEV_TIMES = []; for (let m = 4; m <= 30; m += 0.5) DEV_TIMES.push(m);   // the table's rows, as in Ilford's chart
+// the legend under the Time/temp chart: one line per topic, each colour named in its own colour
+function devChartLegend(nomograph) {
+  const u = DEV_UNITS[S.devUnit], c = (color, text) => h('span', { style: `color: ${color}` }, text);
+  const t = C => `${u.round(u.fromC(C))} ${u.sym}`, ilford = S.devModel === 'ilford';
+  const rows = [
+    nomograph ? ['Grey lines: constant development at the printed charts’ slope (the time doubles every 7.1 °C).'] : null,
+    [c('#3ee6ff', 'Cyan'), ': the chosen rule through the known point', S.devAgitation === 'continuous' ? ['; ', c('#d4a8c6', 'pink'), ': with continuous agitation'] : '', ilford ? ', dashed where extrapolated.' : '.'],
+    [c('#4fe07a', 'Green'), `: the new temperature, its time read off the ${nomograph ? 'bottom' : 'left'}.`],
+    [ilford ? [c('#a99be6', 'Violet'), `: outside Ilford’s ${u.round(u.fromC(18))}–${t(27)}. `] : '', c('#e0884a', 'Orange'), ': under 5 min, risk of uneven development.'],
+    ['Drag either point to change it.'],
+  ];
+  return rows.filter(Boolean).flatMap((r, i) => [i ? h('br') : '', ...r.flat()]);
+}
 const fmtMin = m => { if (!Number.isFinite(m)) return '–'; const sec = Math.round(m * 60); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; };
 const round15 = m => Math.round(m * 4) / 4;   // to the nearest 15 s, as Ilford prints the chart
 const devOpts = () => ({ model: S.devModel, percent: S.devPercent, continuous: S.devAgitation === 'continuous' });
@@ -833,11 +851,11 @@ tools.timetemp = {
     if (S.devChart === 'curve') {
       document.getElementById('dtChartTitle').textContent = 'Time vs temperature';
       drawDevTime(chart);
-      document.getElementById('dtChartNote').textContent = 'Cyan: the known time carried to every temperature by the chosen rule (on a log time axis a fixed-% rule is a straight line), dashed beyond the 18–27 °C of Ilford’s chart (shaded violet); pink: the same with continuous agitation. Blue: the standard 20 °C / 68 °F. Green: the new temperature, with the time read off the left. Shaded orange: under 5 min, where Ilford warns of uneven development. Drag the cyan point to set the known time and temperature, the green marker for the new temperature.';
+      document.getElementById('dtChartNote').replaceChildren(...devChartLegend(false));
     } else {
       document.getElementById('dtChartTitle').textContent = 'Nomograph';
       drawNomograph(chart);
-      document.getElementById('dtChartNote').textContent = 'The printed time/temperature charts: time across on a log scale, temperature up, and a family of lines of constant development (grey, at the printed charts’ slope: the time doubles every 7.1 °C, 9.3 % per °C). Cyan: the chosen rule through the known point, which is why Ilford’s curve bends slightly: steeper near 20 °C, flatter when warm; pink: with continuous agitation. Blue: the standard 20 °C / 68 °F. Green: the new temperature, with the time read off the bottom. Shaded violet: outside the 18–27 °C of Ilford’s chart, where its rule is extrapolated (the curve is dashed there). Shaded orange: under 5 min, where Ilford warns of uneven development. Drag the cyan point anywhere to set the known time and temperature, the green one up or down for the new temperature.';
+      document.getElementById('dtChartNote').replaceChildren(...devChartLegend(true));
     }
     document.getElementById('dtLogField').style.display = S.devChart === 'curve' ? '' : 'none';
     // the conversion table: rows are times at the known temperature, columns the temperatures
@@ -920,7 +938,7 @@ function drawDevTime(container) {
   svg.append(svgEl('circle', { cx: known.x, cy: known.y, r: 4, fill: '#3ee6ff' }));   // the known point
   pointLabel(svg, known.x, known.y, `known: ${fmtMin(S.devTime)} at ${S.devTempFrom} ${u.sym}`, '#3ee6ff', [x0, x1, y0]);
   const r = devAt(S.devTime, S.devTempTo), xs = X(Math.min(tMax, Math.max(tMin, S.devTempTo)));
-  svg.append(svgEl('line', { x1: xs, x2: xs, y1: y0, y2: y1, stroke: '#4fe07a', 'stroke-width': 1.5 }));
+  svg.append(svgEl('line', { x1: xs, x2: xs, y1: Yc(r.time), y2: y1, stroke: '#4fe07a', 'stroke-width': 1.5 }));   // up from the temperature axis to the point
   if (r.time <= yMax && r.time >= yMin) {   // read the time off the left axis: a dotted line to it and the value
     const ys = Y(r.time);
     svg.append(svgEl('line', { x1: x0, x2: xs, y1: ys, y2: ys, stroke: '#4fe07a', 'stroke-width': 1, 'stroke-dasharray': '3 3' }));
@@ -947,7 +965,7 @@ function drawDevTime(container) {
 const NOMO_PER_C = 1.1023;
 function drawNomograph(container) {
   const u = DEV_UNITS[S.devUnit], W = chartWidth(container), Hh = Math.round(Math.min(460, Math.max(300, W * 0.62)));
-  const x0 = 14, x1 = W - 64, y0 = 16, y1 = Hh - 40, tMin = 1, tMax = 64, TMin = u.min, TMax = u.max;
+  const x0 = 14, x1 = W - 28, y0 = 26, y1 = Hh - 40, tMin = 1, tMax = 64, TMin = u.min, TMax = u.max;   // right: two-digit temperatures; top: the unit
   const X = t => x0 + (x1 - x0) * Math.log(t / tMin) / Math.log(tMax / tMin), Y = T => y1 - (y1 - y0) * (T - TMin) / (TMax - TMin);
   const Tinv = y => TMin + (y1 - Math.min(y1, Math.max(y0, y))) / (y1 - y0) * (TMax - TMin);
   const tInv = x => Math.exp(Math.log(tMin) + (Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * Math.log(tMax / tMin));
@@ -967,9 +985,10 @@ function drawNomograph(container) {
   const tick = u.step < 1 ? 1 : 2, labelEvery = (y1 - y0) / ((TMax - TMin) / tick) >= 16 ? tick : 2 * tick;
   for (let T = Math.ceil(TMin / tick) * tick; T <= TMax; T += tick) {
     svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(T), y2: Y(T), class: 'grid' }));
-    if (T % labelEvery === 0) svg.append(svgEl('text', { x: x1 + 6, y: Y(T) + 4 }, T + labelEvery > TMax ? `${T} ${u.sym}` : String(T)));   // the unit on the top label
+    if (T % labelEvery === 0) svg.append(svgEl('text', { x: x1 + 6, y: Y(T) + 4 }, String(T)));
   }
   svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'development time (min)'));
+  svg.append(svgEl('text', { x: x1 + 6, y: y0 - 10 }, u.sym));   // the temperature unit, above its axis
   const y20 = Y(u.fromC(20));   // the standard temperature, lightly marked
   svg.append(svgEl('line', { x1: x0, x2: x1, y1: y20, y2: y20, class: 'std' }));
   // the family of constant-development lines: through t0 at 20 °C, one every quarter doubling
@@ -1000,7 +1019,7 @@ function drawNomograph(container) {
   svg.append(svgEl('circle', { cx: known.x, cy: known.y, r: 5, fill: '#3ee6ff' }));
   pointLabel(svg, known.x, known.y, `known: ${fmtMin(S.devTime)} at ${S.devTempFrom} ${u.sym}`, '#3ee6ff', [x0, x1, y0]);
   const r = devAt(S.devTime, S.devTempTo), ys = Y(Math.min(TMax, Math.max(TMin, S.devTempTo)));
-  svg.append(svgEl('line', { x1: x0, x2: x1, y1: ys, y2: ys, stroke: '#4fe07a', 'stroke-width': 1.5 }));
+  svg.append(svgEl('line', { x1: X(Math.min(tMax, Math.max(tMin, r.time))), x2: x1, y1: ys, y2: ys, stroke: '#4fe07a', 'stroke-width': 1.5 }));   // in from the temperature axis to the point
   if (r.time >= tMin && r.time <= tMax) {
     const xs = X(r.time);
     svg.append(svgEl('line', { x1: xs, x2: xs, y1: ys, y2: y1, stroke: '#4fe07a', 'stroke-width': 1, 'stroke-dasharray': '3 3' }));   // read the time off the bottom
