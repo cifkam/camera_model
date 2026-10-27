@@ -41,8 +41,8 @@ Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`,
   agitation, °C or °F, one chart chosen by a dropdown (the classic nomograph by default: log
   time across, temperature up, lines of constant development at the printed charts' slope of a
   doubling every 7.1 °C, with the chosen rule and the new temperature drawn on it; or a
-  time-vs-temperature curve with the same draggable points) and an interactive version of Ilford's
-  table.
+  time-vs-temperature curve with a linear or a log time axis and the same draggable points) and
+  an interactive version of Ilford's table.
 
 Distances are measured from the lens (thin-lens model); camera distance scales usually measure
 from the film plane, which adds the image distance (about one focal length).
