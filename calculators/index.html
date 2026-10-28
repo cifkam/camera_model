@@ -122,7 +122,7 @@ const S = {
   cocMode: 'print', printLong: 40, viewDist: 50, eyeRes: 1500, coc: 0.1,
   focus: 3,           // m, used by the DoF tools
   chartMin: 0.3, chartMax: 100,   // m, distance axes of the DoF charts
-  spreadMode: 'spread', spreadDelta: 4, railNear: 54, railFar: 50, spreadFocus: 5, spreadPos: 50,   // focus spread tool (mm; spreadFocus: the standard's focus, m; spreadPos: % of the way from the near to the far focus)
+  spreadMode: 'spread', spreadDelta: 4, railNear: 54, railFar: 50, spreadFocus: 5, spreadPos: 50, mapTotal: true, mapDefocus: false, mapDiff: false,   // focus spread tool (mm; spreadFocus: the standard's focus, m; spreadPos: % of the way from the near to the far focus)
   targetFormat: 'APS-C', eqRef: 'diagonal', sceneDist: 3,   // formats tool: the format compared with, the dimension compared, subject distance (m)
   film: 'Ilford HP5+', film2: 'none', meteredTime: 10, rcAperture: 'none', customP: 1.3, customThreshold: 1, rcLog: true, rcMax: 60,   // reciprocity tool (times in s; rcMax = span of the chart's metered axis)
   devTime: 8, devTempFrom: 20, devTempTo: 24, devUnit: 'C', devModel: 'ilford', devPercent: 10, devAgitation: 'intermittent', devChart: 'nomograph', devLog: false,   // development time tool (time in min, temperatures in devUnit)
@@ -507,6 +507,8 @@ tools.spread = {
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Blur at the near and far points vs aperture'), h('div', { id: 'spChart' }),
       h('p', { class: 'note', id: 'spLegend' })));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Spread vs aperture'), h('div', { id: 'spMap' }),
+      h('div', { class: 'inline-fields' },   // which blur to draw lines of equal value for
+        checkField({ label: 'total', key: 'mapTotal' }), checkField({ label: 'defocus', key: 'mapDefocus' }), checkField({ label: 'diffraction', key: 'mapDiff' })),
       h('p', { class: 'note', id: 'spMapLegend' })));
   },
   update() {
@@ -557,9 +559,11 @@ tools.spread = {
     ]));
     drawSpreadBlur(document.getElementById('spChart'), r, c, N);
     drawSpreadMap(document.getElementById('spMap'), c, N, d, t);
+    const shown = [S.mapTotal && 'total', S.mapDefocus && 'defocus', S.mapDiff && 'diffraction'].filter(Boolean);
     document.getElementById('spMapLegend').replaceChildren(...colorLegend([
-      [`Grey lines: equal blur at the ${mid ? 'near and far points' : 'blurrier end'}, in mm. `, ['#ffb347', 'Orange'], `: your CoC, ${fmt(c, 3)} mm; `, ['#4fe07a', 'shaded green'], ' left of it: every spread and aperture that stays acceptable.'],
-      [['#4fe07a', 'Dashed green'], ': the optimum f-number for each spread. ', ['#f2f3f5', 'White'], ': your f-number and spread; drag it in either direction.'],
+      [`Lines of equal blur at the ${mid ? 'near and far points' : 'blurrier end'}, in mm: `, ['#4fe07a', 'green'], ' total, ', ['#ff6b6b', 'red'], ' defocus alone, ', ['#5b7cff', 'blue'], ` diffraction alone; the thick one of each at your CoC, ${fmt(c, 3)} mm.`],
+      [['#4fe07a', 'Shaded green'], shown.length ? ': where everything shown stays within the CoC.' : ': (pick a blur above).'],
+      (S.mapTotal ? [['#4fe07a', 'Dashed green'], ': the optimum f-number for each spread. '] : []).concat([['#f2f3f5', 'White'], ': your spread and f-number; drag it in either direction.']),
     ]));
     document.getElementById('spLegend').replaceChildren(...colorLegend([
       [['#4fe07a', 'Green'], mid ? ': total blur at the near and far points.' : `: total blur at the blurrier end (${t > 0.5 ? 'far' : 'near'}).`],
@@ -743,19 +747,30 @@ function drawSpreadMap(container, c, N, d, t) {
   const Dinv = x => dMin * Math.exp((Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * Math.log(dMax / dMin));
   const Y = n => y1 - (y1 - y0) * Math.log(n / nMin) / Math.log(nMax / nMin);
   const Ninv = y => nMin * Math.exp((y1 - Math.min(y1, Math.max(y0, y))) / (y1 - y0) * Math.log(nMax / nMin));
-  const spreadAt = (b, n) => { const a = b * b - (kd * n) ** 2; return a > 0 ? n * Math.sqrt(a) / k : 0; };
+  // the three blur functions as the largest spread that keeps each within b at f/N (0: none, Infinity: any)
+  const limit = {
+    total: (b, n) => { const a = b * b - (kd * n) ** 2; return a > 0 ? n * Math.sqrt(a) / k : 0; },   // arches
+    defocus: (b, n) => b * n / k,                                                                       // diagonals
+    diffraction: (b, n) => kd * n <= b ? Infinity : 0,                                                  // horizontals at N = 750 b
+  };
+  const COLOR = { total: SP_TOTAL, defocus: SP_DEFOCUS, diffraction: SP_DIFF };
+  const on = ['total', 'defocus', 'diffraction'].filter(f => S[{ total: 'mapTotal', defocus: 'mapDefocus', diffraction: 'mapDiff' }[f]]);
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
   const clipId = 'spMap' + Math.random().toString(36).slice(2, 7), defs = svgEl('defs', {}), clip = svgEl('clipPath', { id: clipId });
   clip.append(svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })); defs.append(clip); svg.append(defs);
   const gridLayer = svgEl('g', {}); svg.append(gridLayer);   // the grid at the bottom, under the shading and the lines
   const plot = svgEl('g', { 'clip-path': `url(#${clipId})` }); svg.append(plot);
-  // the acceptable region left of the CoC line tinted green, and the rest orange: the orange is the plot with that
-  // region cut out (even-odd fill), so both tints stay translucent over the grid without mixing
-  const nEnd = Math.min(nMax, 750 * c), pts = [];
-  for (let i = 0; i <= 160; i++) { const n = nMin * Math.pow(nEnd / nMin, i / 160); pts.push(`${Xr(spreadAt(c, n)).toFixed(1)},${Y(n).toFixed(1)}`); }
-  const okPath = nEnd > nMin ? `M${pts.join(' L')} L${x0},${Y(nEnd).toFixed(1)} L${x0},${y1} Z` : '';
-  plot.append(svgEl('path', { d: `M${x0},${y0} H${x1} V${y1} H${x0} Z ${okPath}`, 'fill-rule': 'evenodd', fill: '#ffb347', opacity: .1 }));
-  if (okPath) plot.append(svgEl('path', { d: okPath, fill: SP_TOTAL, opacity: .1 }));
+  // shaded green where every function shown stays within the CoC (with the total shown, that is the total's region:
+  // it can only be within c when both parts are)
+  if (on.length) {
+    const pts = [];
+    for (let i = 0; i <= 240; i++) {
+      const n = nMin * Math.pow(nMax / nMin, i / 240), lim = Math.min(...on.map(f => limit[f](c, n)));
+      pts.push(`${(lim === Infinity ? x1 + 10 : lim <= 0 ? x0 : Math.min(x1 + 10, Xr(lim))).toFixed(1)},${Y(n).toFixed(1)}`);
+    }
+    const okPath = `M${pts.join(' L')} L${x0},${y0} L${x0},${y1} Z`;
+    plot.append(svgEl('path', { d: okPath, fill: SP_TOTAL, opacity: .1 }));
+  }
   // grid
   const stops = [4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90, 128], every = (y1 - y0) / (stops.length - 1) >= 18 ? 1 : 2;
   stops.forEach((n, i) => { gridLayer.append(svgEl('line', { x1: x0, x2: x1, y1: Y(n), y2: Y(n), class: 'grid' }));
@@ -764,20 +779,34 @@ function drawSpreadMap(container, c, N, d, t) {
     svg.append(svgEl('text', { x: X(v), y: y1 + 14, 'text-anchor': v === 40 ? 'end' : 'middle' }, String(v))); }
   svg.append(svgEl('text', { x: x0 + 4, y: y0 + 12 }, 'f-number'));
   svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'spread Δ (mm)'));
-  // the lines of equal blur, labelled at their widest point; the CoC's own line in orange
-  const arch = (b, color, width) => {
-    const top = Math.min(nMax, 750 * b), path = [];
-    for (let i = 0; i <= 160; i++) { const n = nMin * Math.pow(top / nMin, i / 160); path.push((i ? 'L' : 'M') + Xr(spreadAt(b, n)).toFixed(1) + ',' + Y(n).toFixed(1)); }
-    plot.append(svgEl('path', { d: path.join(''), fill: 'none', stroke: color, 'stroke-width': width }));
-    const na = 750 * b / Math.SQRT2, da = 750 * b * b / (2 * k);
-    if (na > nMin && na < nMax && da > dMin && da < dMax) svg.append(svgEl('text', { x: X(da) + 4, y: Y(na) + 4, fill: color, class: 'ptlabel' }, +b.toFixed(3) + ''));
+  // the isolines: thin for the blur levels, thick where the function reaches the CoC; each function in its colour
+  const levels = [0.01, 0.015, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.5].filter(b => b > c / 4 && b < c * 3 && Math.abs(b / c - 1) > 0.08);
+  const label = (x, y, b, color, anchor = 'start') => svg.append(svgEl('text', { x, y, 'text-anchor': anchor, fill: color, class: 'ptlabel' }, +b.toFixed(3) + ''));
+  const iso = (f, b, current) => {
+    const color = COLOR[f], width = current ? 2.2 : 1, opacity = current ? 1 : 0.55;
+    if (f === 'diffraction') {   // a horizontal line at N = 750 b
+      const n = b / kd; if (n < nMin || n > nMax) return;
+      plot.append(svgEl('line', { x1: x0, x2: x1, y1: Y(n), y2: Y(n), stroke: color, 'stroke-width': width, opacity }));
+      if (Y(n) > y0 + 18) label(x0 + 4, Y(n) - 4, b, color); return;   // at the left edge, clear of the defocus labels along the top and right
+    }
+    const top = f === 'total' ? Math.min(nMax, b / kd) : nMax, path = [];
+    for (let i = 0; i <= 160; i++) { const n = nMin * Math.pow(top / nMin, i / 160); path.push((i ? 'L' : 'M') + Xr(limit[f](b, n)).toFixed(1) + ',' + Y(n).toFixed(1)); }
+    plot.append(svgEl('path', { d: path.join(''), fill: 'none', stroke: color, 'stroke-width': width, opacity }));
+    if (f === 'total') {   // labelled at the widest point
+      const na = b / (kd * Math.SQRT2), da = b * b / (2 * kd * k);
+      if (na > nMin && na < nMax && da > dMin && da < dMax) label(X(da) + 4, Y(na) + 4, b, color);
+    } else {   // labelled where the diagonal leaves the plot, at the top or the right edge
+      const nTop = Math.min(nMax, dMax * k / b);
+      if (b * nTop / k > dMin) label(Xr(b * nTop / k) - 3, Y(nTop) + (nTop < nMax ? -4 : 12), b, color, 'end');
+    }
   };
-  for (const b of [0.01, 0.015, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.5].filter(b => b > c / 4 && b < c * 3 && Math.abs(b / c - 1) > 0.08)) arch(b, '#7c8290', 1);
-  arch(c, '#ffb347', 2);
-  // the optimum for each spread: the widest points of the arches
-  const ridge = [];
-  for (let i = 0; i <= 80; i++) { const n = nMin * Math.pow(nMax / nMin, i / 80); ridge.push((i ? 'L' : 'M') + Xr(n * n / (750 * k)).toFixed(1) + ',' + Y(n).toFixed(1)); }
-  plot.append(svgEl('path', { d: ridge.join(''), fill: 'none', stroke: SP_TOTAL, 'stroke-width': 1.5, 'stroke-dasharray': '6 4' }));
+  for (const f of on) { for (const b of levels) iso(f, b, false); }
+  for (const f of on) iso(f, c, true);
+  if (S.mapTotal) {   // the optimum for each spread: the widest points of the arches
+    const ridge = [];
+    for (let i = 0; i <= 80; i++) { const n = nMin * Math.pow(nMax / nMin, i / 80); ridge.push((i ? 'L' : 'M') + Xr(n * n * kd / k).toFixed(1) + ',' + Y(n).toFixed(1)); }
+    plot.append(svgEl('path', { d: ridge.join(''), fill: 'none', stroke: SP_TOTAL, 'stroke-width': 1.5, 'stroke-dasharray': '6 4' }));
+  }
   // you: the spread and the side panel's f-number
   const px = X(d), py = Y(Math.min(nMax, Math.max(nMin, N)));
   svg.append(svgEl('circle', { cx: px, cy: py, r: 5, fill: SP_SET }));
