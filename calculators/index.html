@@ -75,11 +75,14 @@
   .results { display: flex; flex-wrap: wrap; gap: 8px; }   /* tiles size to their content, they do not fill the row */
   .results.two { display: grid; grid-template-columns: max-content repeat(2, max-content); align-items: center; margin-top: 12px; }
   .results .rowlabel { color: var(--muted); font-size: 13px; text-align: right; padding-right: 6px; }
+  .results.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }   /* fixed columns: tiles keep their size whatever they show */
+  .results.grid3 .stat { min-width: 0; display: flex; flex-direction: column; justify-content: space-between; }   /* values aligned along a row when a label wraps */
+  @media (max-width: 560px) { .results.grid3 { gap: 6px; } .results.grid3 .stat { padding: 6px 8px; } .results.grid3 .stat .v { font-size: 15px; } }
   .results .rowlabel b { color: var(--text); font-weight: 600; display: block; }
   @media (max-width: 560px) { .results.two { grid-template-columns: 1fr; } .results .rowlabel { text-align: left; margin-top: 6px; } }
   /* phones: the text keeps its padding, the charts run across the card's padding and border and most of the page's
      12 px padding, stopping 6 px short of the screen edges so the axis labels are not flush with them */
-  @media (max-width: 560px) { #dofBar, #dofCurves, #spScene, #spChart, #rcChart, #dtChart { margin: 0 -21px; } }
+  @media (max-width: 560px) { #dofBar, #dofCurves, #spScene, #spChart, #spMap, #rcChart, #dtChart { margin: 0 -21px; } }
   .stat { background: var(--panel2); border-radius: 6px; padding: 8px 12px; min-width: 120px; }
   .stat .k { color: var(--muted); font-size: 12px; }
   .stat .v { font-size: 18px; font-variant-numeric: tabular-nums; }
@@ -161,6 +164,9 @@ function h(tag, attrs = {}, ...children) {
 const svgEl = (tag, attrs = {}, ...children) => {
   const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  // the stylesheet colours all chart text (svg text { fill }), and CSS beats a fill attribute: a text given its own
+  // colour gets it as an inline style, which wins
+  if (tag === 'text' && attrs.fill) e.style.fill = attrs.fill;
   for (const c of children.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
   return e;
 };
@@ -473,7 +479,7 @@ tools.table = {
 // Tool: focus spread (view cameras)
 // ---------------------------------------------------------------------------
 const spreadDelta = () => S.spreadMode === 'readings' ? Math.abs(S.railNear - S.railFar) : S.spreadDelta;
-const fNum = N => !Number.isFinite(N) ? '–' : 'f/' + (N >= 10 ? N.toFixed(0) : N.toFixed(1));
+const fNum = N => !Number.isFinite(N) ? '–' : 'f/' + N.toFixed(1);   // a computed f-number: one decimal, so the values agree with each other and with the marked stops they round to
 // rounded to the marked stops, half stops included
 const stopAtLeast = N => O.APERTURES_HALF.find(a => a >= N * 0.999);            // the widest marked stop not wider than N
 const stopAtMost = N => [...O.APERTURES_HALF].reverse().find(a => a <= N * 1.001);   // the smallest marked stop not smaller than N
@@ -486,7 +492,6 @@ tools.spread = {
     const card = h('div', { class: 'card' }, h('h2', {}, 'Focus spread'),
       selectField({ label: 'enter', key: 'spreadMode', options: ['spread', 'readings'], labels: k => k === 'readings' ? 'the two rail readings' : 'the spread', onChange: renderTool }));
     if (![S.railNear, S.railFar].every(v => v >= 0 && v <= 100)) { S.railNear = DEFAULTS.railNear; S.railFar = DEFAULTS.railFar; }   // readings saved before the 0–100 mm range
-    S.spreadDelta = Math.max(0.5, S.spreadDelta);
     if (S.spreadMode === 'readings') card.append(   // half-millimetre steps, as a rail scale is read
       numField({ label: 'rail reading, focused on the nearest point', key: 'railNear', min: 0, max: 100, step: 0.5, unit: 'mm', decimals: 1 }),
       numField({ label: 'rail reading, focused on the farthest point', key: 'railFar', min: 0, max: 100, step: 0.5, unit: 'mm', decimals: 1 }));
@@ -495,29 +500,44 @@ tools.spread = {
     card.append(numField({ label: 'standard focused at (picture below)', key: 'spreadFocus', min: 0.3, max: 1000, step: 0.01, unit: 'm', log: true, decimals: 2 }));
     card.append(h('p', { class: 'note' }, 'Focus on the nearest and on the farthest point that must be sharp, and note where the standard sits each time: the spread is the travel between the two. It holds for any lens, format or tilt; only the circle of confusion from the side panel enters.'));
     root.append(card);
-    root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'spStats' }),
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results grid3', id: 'spStats' }),
       h('p', { class: 'note', id: 'spNote', style: 'white-space: pre-line' })));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'The two planes of sharp focus'), h('div', { id: 'spScene' }),
       h('p', { class: 'note', id: 'spSceneNote', style: 'white-space: pre-line' })));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Blur at the near and far points vs aperture'), h('div', { id: 'spChart' }),
       h('p', { class: 'note', id: 'spLegend' })));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Spread vs aperture'), h('div', { id: 'spMap' }),
+      h('p', { class: 'note', id: 'spMapLegend' })));
   },
   update() {
+    // the spread and the two readings are kept in step, so switching between them keeps the values: in readings
+    // mode the spread follows the readings; in spread mode the near reading follows the spread (the far one stays,
+    // unless the pair has to shift to stay within 0–100 mm)
+    if (S.spreadMode === 'readings') S.spreadDelta = Math.abs(S.railNear - S.railFar);
+    else if (Math.abs(Math.abs(S.railNear - S.railFar) - S.spreadDelta) > 1e-9) {
+      const sgn = S.railNear >= S.railFar ? 1 : -1, far = Math.min(100 - (sgn > 0 ? S.spreadDelta : 0), Math.max(sgn > 0 ? 0 : S.spreadDelta, S.railFar));
+      S.railFar = +far.toFixed(2); S.railNear = +(far + sgn * S.spreadDelta).toFixed(2);
+    }
     const c = cocInfo().coc, d = spreadDelta(), t = 1 - S.spreadPos / 100, mid = Math.abs(t - 0.5) < 1e-9;   // t: the share from the far focus, as the formulas use it
     const r = O.focusSpread(d, c, t), N = S.fnumber, readings = S.spreadMode === 'readings';
     const stat = (k, v, cls = 'v') => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: cls }, v));
     const geoStop = stopAtLeast(r.geometric), within = r.range && [stopAtLeast(r.range[0]), stopAtMost(r.range[1])];
     const marked = within && within[0] && within[1] && within[0] <= within[1] ? ` (marked f/${within[0]}–f/${within[1]})` : '';
     const bNear = r.nearBlur(N), bFar = r.farBlur(N), room = r.room(N), most = r.room(r.roomiest);
+    // three rows of three tiles in fixed columns, so a longer value never resizes or moves a tile:
+    // the apertures, the standard (mm), the blur
+    const warnIf = bad => bad ? 'v warn' : 'v';
     document.getElementById('spStats').replaceChildren(
-      stat('set the standard', readings ? `at ${fmt(S.railFar + t * (S.railNear - S.railFar), 1)} mm` : mid ? `halfway: ${fmt(d / 2, 2)} mm from each` : `${fmt((1 - t) * d, 2)} mm from the near focus`),
-      stat(mid ? 'geometric: Δ / 2c' : 'geometric', `${fNum(r.geometric)}${geoStop ? ` → f/${geoStop}` : ''}`),
-      stat(mid ? 'optimum: √(375 Δ)' : 'optimum', `${fNum(r.hansma)} ≈ f/${stopNearest(r.hansma)}`),
-      stat('blur at the optimum', `${fmt(r.optimumBlur, 3)} mm`, r.optimumBlur > c ? 'v warn' : 'v'),
-      stat('apertures within the CoC', r.range ? `${fNum(r.range[0])} – ${fNum(r.range[1])}` : 'none', r.range ? 'v' : 'v warn'),
-      stat(`at f/${N}: near / far`, `${fmt(bNear, 3)} / ${fmt(bFar, 3)} mm`, Math.max(bNear, bFar) > c ? 'v warn' : 'v'),
-      stat(`room for the standard at f/${N}`, room >= 0 ? `±${fmt(room, 2)} mm` : 'none', room >= 0 ? 'v' : 'v warn'),
-      stat('most room', most > 0 ? `±${fmt(most, 2)} mm at ${fNum(r.roomiest)}` : 'none', most > 0 ? 'v' : 'v warn'));
+      stat('geometric', `${fNum(r.geometric)}${geoStop ? ` → f/${geoStop}` : ''}`),   // → : rounded up, to the next marked stop at or above it
+      stat('optimum', `${fNum(r.hansma)} ≈ f/${stopNearest(r.hansma)}`),
+      stat('acceptable apertures', r.range ? `${fNum(r.range[0])} – ${fNum(r.range[1])}` : 'none', warnIf(!r.range)),
+      readings ? stat('set the standard at', `${fmt(S.railFar + t * (S.railNear - S.railFar), 1)} mm`)
+               : stat('standard from the near focus', `${fmt((1 - t) * d, 2)} mm`),
+      stat(`room for it at f/${N}`, room >= 0 ? `±${fmt(room, 2)} mm` : 'none', warnIf(room < 0)),
+      stat(`most room, at ${fNum(r.roomiest)}`, most > 0 ? `±${fmt(most, 2)} mm` : 'none', warnIf(!(most > 0))),
+      stat(`near blur at f/${N}`, `${fmt(bNear, 3)} mm`, warnIf(bNear > c)),
+      stat(`far blur at f/${N}`, `${fmt(bFar, 3)} mm`, warnIf(bFar > c)),
+      stat('blur at the optimum', `${fmt(r.optimumBlur, 3)} mm`, warnIf(r.optimumBlur > c)));
     document.getElementById('spNote').replaceChildren(   // kept lines and stacked alternatives: dragging does not move the page
       keptLine(`Spread Δ = ${fmt(d, 2)} mm, CoC ${fmt(c, 3)} mm on film. Blur at each end: defocus (the film's distance from that image) / N and diffraction N / 750 mm, combined as √(a² + b²).`, true),
       keptLine(`Off the midpoint the blurrier end decides: the apertures are those of a ${fmt(2 * Math.max(t, 1 - t) * d, 2)} mm spread set halfway.`, !mid),
@@ -533,9 +553,14 @@ tools.spread = {
        ['#7fd3ff', 'far plane'], ` ${g.sFar === Infinity ? '∞, as far as the standard can go' : `${fmtDist(g.sFar / 1000)} (${fmt(g.vFar, 1)} mm)`}.`],
       [`Left: the light cones meeting at the two images, drawn steeper than they are. The bars on the standard are where they cross the film, ${fmt(blur, 3)} mm at f/${N}; `, ['#ffb347', 'orange'], `: the CoC. Dotted: the film position for ∞.`],
       [['#4fe07a', 'Shaded green'], room >= 0 ? `: where the standard may sit at f/${N} with both planes acceptable. ` : `: none at f/${N}, no position keeps both planes acceptable. `, ['#3ee6ff', 'Shaded'], `: the depth of field.`],
-      [['#f2f3f5', 'White'], ': drag the standard to move it within the spread; drag a dashed image line or its focus to move both film positions.'],
+      [['#f2f3f5', 'White'], ': drag the standard to move it within the spread, or its focus on the right to move both film positions together. Drag a dashed image line to change the spread, an edge of the aperture blades to change the f-number; with an edge in the red, a plane is not acceptable.'],
     ]));
     drawSpreadBlur(document.getElementById('spChart'), r, c, N);
+    drawSpreadMap(document.getElementById('spMap'), c, N, d, t);
+    document.getElementById('spMapLegend').replaceChildren(...colorLegend([
+      [`Grey lines: equal blur at the ${mid ? 'near and far points' : 'blurrier end'}, in mm. `, ['#ffb347', 'Orange'], `: your CoC, ${fmt(c, 3)} mm; `, ['#4fe07a', 'shaded green'], ' left of it: every spread and aperture that stays acceptable.'],
+      [['#4fe07a', 'Dashed green'], ': the optimum f-number for each spread. ', ['#f2f3f5', 'White'], ': your f-number and spread; drag it in either direction.'],
+    ]));
     document.getElementById('spLegend').replaceChildren(...colorLegend([
       [['#4fe07a', 'Green'], mid ? ': total blur at the near and far points.' : `: total blur at the blurrier end (${t > 0.5 ? 'far' : 'near'}).`],
       [['#ff6b6b', 'Red'], ': defocus, shrinks as you stop down. ', ['#5b7cff', 'Blue'], ': diffraction, grows as you stop down.'],
@@ -559,15 +584,16 @@ function spreadGeometry(d, t) {
 }
 function drawSpreadScene(container, d, c, N, t, r) {
   const g = spreadGeometry(d, t), f = g.f;
-  const W = chartWidth(container), Hh = 256, yT = 34, yB = 190, yA = (yT + yB) / 2;
-  const cx0 = 8, cx1 = Math.round(W * 0.36), lx = Math.round(W * 0.41), sx0 = Math.round(W * 0.46), xInf = W - 12, sx1 = xInf - 30;
+  const W = chartWidth(container), Hh = 334, yT = 34, yB = 268, yA = (yT + yB) / 2;
+  // the lens gets a fixed 44 px gap (room for its focal length label); the rest is shared 38 : 62 by the two panels
+  const gap = 44, cx0 = 8, cx1 = cx0 + Math.round((W - gap - 8) * 0.38), lx = cx1 + gap / 2, sx0 = cx1 + gap, xInf = W - 12, sx1 = xInf - 30;
   const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
   svg.append(svgEl('line', { x1: cx0, x2: xInf, y1: yA, y2: yA, stroke: '#5f6572' }));   // the lens axis
   // --- behind the lens: the rail, magnified; larger extensions to the left -------------------------------------
   if (!container._dragging) { const pad = Math.max(d * 0.6, 1); container._span = [Math.min(f, g.vFar) - pad, g.vNear + pad]; }
   const [vLo, vHi] = container._span;
   const Xc = v => cx1 - (v - vLo) / (vHi - vLo) * (cx1 - cx0), Vinv = x => vLo + (cx1 - Math.min(cx1, Math.max(cx0, x))) / (cx1 - cx0) * (vHi - vLo);
-  const ky = 26 / c;   // vertical scale, px per mm: the circle of confusion is 26 px tall
+  const ky = 39 / c;   // vertical scale, px per mm: the circle of confusion is 39 px tall
   const clipId = 'spClip' + Math.random().toString(36).slice(2, 7);
   const defs = svgEl('defs', {}), clip = svgEl('clipPath', { id: clipId });
   clip.append(svgEl('rect', { x: cx0, y: yT, width: cx1 - cx0, height: yB - yT })); defs.append(clip); svg.append(defs);
@@ -591,21 +617,38 @@ function drawSpreadScene(container, d, c, N, t, r) {
   const reach = r.room(N) >= 0 ? N * Math.sqrt(c * c - (N * O.DIFFRACTION_PER_N) ** 2) : null;
   if (reach !== null) { const a = Xc(g.vFar + reach), b = Xc(g.vNear - reach); cam.append(svgEl('rect', { x: a, y: yT, width: Math.max(1, b - a), height: yB - yT, fill: SP_TOTAL, opacity: .14 })); }
   cam.append(svgEl('line', { x1: xm, x2: xm, y1: yT, y2: yB, stroke: SP_SET, 'stroke-width': 2 }));   // the standard
-  cam.append(svgEl('line', { x1: xm - 4, x2: xm - 4, y1: yA - bNear * ky / 2, y2: yA + bNear * ky / 2, stroke: SP_NEAR, 'stroke-width': 4 }));
-  cam.append(svgEl('line', { x1: xm + 4, x2: xm + 4, y1: yA - bFar * ky / 2, y2: yA + bFar * ky / 2, stroke: SP_FAR, 'stroke-width': 4 }));
-  cam.append(svgEl('line', { x1: xm + 11, x2: xm + 11, y1: yA - c * ky / 2, y2: yA + c * ky / 2, stroke: '#ffb347', 'stroke-width': 3 }));   // the CoC, for comparison
+  // the CoC on the standard itself, the two blur discs either side of it
+  cam.append(svgEl('line', { x1: xm - 6, x2: xm - 6, y1: yA - bNear * ky / 2, y2: yA + bNear * ky / 2, stroke: SP_NEAR, 'stroke-width': 4 }));
+  cam.append(svgEl('line', { x1: xm + 6, x2: xm + 6, y1: yA - bFar * ky / 2, y2: yA + bFar * ky / 2, stroke: SP_FAR, 'stroke-width': 4 }));
+  cam.append(svgEl('line', { x1: xm, x2: xm, y1: yA - c * ky / 2, y2: yA + c * ky / 2, stroke: '#ffb347', 'stroke-width': 4 }));   // the CoC, for comparison
   svg.append(svgEl('circle', { cx: xm, cy: yT, r: 5, fill: SP_SET }));
   const tight = Xc(g.vFar) - Xc(g.vNear) < 44;   // too close for two numbers side by side: the far one drops a row
   const inPanel = x => Math.min(cx1 - 19, Math.max(cx0 + 19, x));
   svg.append(svgEl('text', { x: inPanel(Xc(g.vNear)), y: yB + 14, 'text-anchor': 'middle', fill: SP_NEAR, class: 'ptlabel' }, fmt(g.vNear, 1)));
   svg.append(svgEl('text', { x: inPanel(Xc(g.vFar)), y: yB + (tight ? 27 : 14), 'text-anchor': 'middle', fill: SP_FAR, class: 'ptlabel' }, fmt(g.vFar, 1)));
   const dInf = Xc(f) - xm, nearInf = f > vLo && f < vHi && Math.abs(dInf) < 34;   // the ∞ mark close by: the label turns away from it
-  svg.append(svgEl('text', { x: nearInf ? xm - Math.sign(dInf || 1) * 4 : xm, y: yT - 10, 'text-anchor': nearInf ? (dInf >= 0 ? 'end' : 'start') : 'middle', fill: SP_SET, class: 'ptlabel' }, 'standard'));
+  svg.append(svgEl('text', { x: nearInf ? xm - Math.sign(dInf || 1) * 4 : xm, y: yT - 10, 'text-anchor': nearInf ? (dInf >= 0 ? 'end' : 'start') : 'middle', fill: SP_SET, class: 'ptlabel' }, `${Math.round((1 - t) * 100)} %`));   // the standard's position, as the input gives it
   svg.append(svgEl('text', { x: cx0 + 2, y: Hh - 22 }, 'lens to film (mm)'));
   // --- the lens ---------------------------------------------------------------------------------------------
-  svg.append(svgEl('ellipse', { cx: lx, cy: yA, rx: 5, ry: 44, fill: '#4fa8ff', 'fill-opacity': .3, stroke: '#4fa8ff' }));
-  svg.append(svgEl('text', { x: lx, y: yA - 52, 'text-anchor': 'middle', fill: '#4fa8ff' }, 'lens'));
-  svg.append(svgEl('text', { x: lx, y: yA + 64, 'text-anchor': 'middle', fill: '#4fa8ff' }, `${f} mm`));
+  svg.append(svgEl('ellipse', { cx: lx, cy: yA, rx: 6, ry: 66, fill: '#4fa8ff', 'fill-opacity': .3, stroke: '#4fa8ff' }));
+  // the aperture: blades close in from the top and the bottom, leaving an opening in proportion to its diameter f/N
+  // (full height at f/4, half per two stops)
+  const ry = 66, open = ry * Math.min(1, 4 / N), bw = 16;
+  const sharp = Math.max(r.nearBlur(N), r.farBlur(N)) <= c;   // both planes within the CoC at this f-number; the f-number turns red when not
+  for (const [y0b, y1b] of [[yA - ry - 4, yA - open], [yA + open, yA + ry + 4]])
+    svg.append(svgEl('rect', { x: lx - bw / 2, y: y0b, width: bw, height: Math.max(0, y1b - y0b), rx: 2, fill: '#3a3e47', stroke: '#9096a0', 'stroke-width': 1 }));
+  // red where a blade edge would leave a plane unacceptable: too far out (wider than the widest acceptable aperture,
+  // defocus) at the top and bottom, too close to the axis (smaller than the smallest one, diffraction) in the middle
+  const bad = (ya, yb) => { if (yb - ya > 0.5) svg.prepend(svgEl('rect', { x: lx - bw / 2 - 10, y: ya, width: bw + 20, height: yb - ya, fill: '#ff5252', opacity: .35 })); };   // at the back, behind the axis, the lens and the blades
+  if (!r.range) bad(yA - ry - 4, yA + ry + 4);
+  else {
+    const oWide = 4 * ry / r.range[0], oNarrow = 4 * ry / r.range[1];   // openings (half-heights) at the two limits
+    if (oWide < ry) { bad(yA - ry - 4, yA - oWide); bad(yA + oWide, yA + ry + 4); }
+    bad(yA - Math.min(ry, oNarrow), yA + Math.min(ry, oNarrow));
+  }
+  svg.append(svgEl('text', { x: lx, y: yA + 104, 'text-anchor': 'middle', fill: sharp ? '#b8bec8' : '#ff6b6b', class: 'ptlabel' }, `f/${N}`));
+  svg.append(svgEl('text', { x: lx, y: yA - 74, 'text-anchor': 'middle' }, 'lens'));
+  svg.append(svgEl('text', { x: lx, y: yA + 86, 'text-anchor': 'middle', class: 'ptlabel' }, `${f} mm`));
   // --- in front of the lens: the scene, log distance with ∞ after a break -----------------------------------------
   const dmin = Math.min(0.5, g.sNear / 1000 / 1.6), dmax = 1000;
   const Xs = m => m === Infinity ? xInf : sx0 + (sx1 - sx0) * (Math.log(Math.min(dmax, Math.max(dmin, m))) - Math.log(dmin)) / (Math.log(dmax) - Math.log(dmin));
@@ -639,27 +682,114 @@ function drawSpreadScene(container, d, c, N, t, r) {
   svg.append(svgEl('circle', { cx: xf, cy: yA - 30, r: 5, fill: SP_SET }));
   svg.append(svgEl('text', { x: xf, y: yA - 38, 'text-anchor': 'middle', fill: SP_SET, class: 'ptlabel' }, fmtDist(g.s / 1000)));
   container.replaceChildren(svg);
-  // drags: the standard moves within the spread (the two images stay put); a dashed image line, or the focus in
-  // front of the lens, moves both film positions together with the standard where it is
+  // drags: the standard moves within the spread (the two images stay put); a dashed image line moves on its own,
+  // changing the spread (the other image stays put, the standard keeps its share); the focus in front of the lens
+  // moves both film positions together
   const setKey = (key, v) => { if (fields[key]) fields[key].set(v); else S[key] = v; };
   const focusOf = v => v - f > 1e-6 ? f * v / (v - f) : 1e6;
-  const setFocus = (mm, round) => { const v = Math.min(g.sMax, Math.max(2 * f, mm)) / 1000; setKey('spreadFocus', round ? +v.toPrecision(3) : v); update(); };
+  const setFocus = (mm, round) => { const v = Math.min(1e6, Math.max(2 * f, mm)) / 1000; setKey('spreadFocus', round ? +v.toPrecision(3) : v); update(); };
+  const setSpread = dd => {   // the spread input, or the rail reading of the image that moved
+    if (S.spreadMode !== 'readings') { setKey('spreadDelta', dd); return; }
+    const sgn = S.railNear >= S.railFar ? 1 : -1;
+    if (container._handle === 'near') setKey('railNear', Math.min(100, Math.max(0, +(S.railFar + sgn * dd).toFixed(1))));
+    else setKey('railFar', Math.min(100, Math.max(0, +(S.railNear - sgn * dd).toFixed(1))));
+  };
   makeDraggable(container, (x, y, phase) => {
     if (phase === 'down') {
-      const cand = x < lx ? [['std', Math.abs(x - xm) - 2], ['pair', Math.abs(x - Xc(g.vNear))], ['pair', Math.abs(x - Xc(g.vFar))]] : [['scene', Math.abs(x - xf)]];
+      const cand = x < lx ? [['std', Math.abs(x - xm) - 2], ['near', Math.abs(x - Xc(g.vNear))], ['far', Math.abs(x - Xc(g.vFar))]] : [['scene', Math.abs(x - xf)]];
       const [hd, dist] = cand.reduce((a, b) => b[1] < a[1] ? b : a);   // the standard wins a tie with an image line
-      container._handle = dist <= DRAG_REACH ? hd : null;
+      const onIris = Math.abs(x - lx) <= bw / 2 + 12 && Math.abs(Math.abs(y - yA) - open) <= 16;   // an inner edge of the blades
+      container._handle = onIris ? 'iris' : dist <= DRAG_REACH ? hd : null;
       container._dragging = !!container._handle;
-      container._grab = { v: Vinv(x), vFar: g.vFar };
+      container._grab = { vNear: g.vNear, vFar: g.vFar };
     }
     const hd = container._handle, gr = container._grab;
     if (hd === 'std') {   // within the spread: from the near image (0 %) to the far one (100 %)
       const pos = Math.round((1 - Math.min(1, Math.max(0, (Vinv(x) - gr.vFar) / d))) * 100);
       setKey('spreadPos', pos); setFocus(focusOf(gr.vFar + (1 - pos / 100) * d), false);
-    } else if (hd === 'pair') setFocus(focusOf(Math.max(f, gr.vFar + Vinv(x) - gr.v) + t * d), false);
-    else if (hd === 'scene') setFocus(Dinv(x) * 1000, true);
+    } else if (hd === 'near' || hd === 'far') {
+      const vFar = hd === 'far' ? Math.max(f, Math.min(gr.vNear - 0.5, Vinv(x))) : gr.vFar;
+      const vNear = hd === 'near' ? Math.max(gr.vFar + 0.5, Vinv(x)) : gr.vNear;
+      const dd = Math.min(40, Math.round((vNear - vFar) * 10) / 10);   // 0.5–40 mm, as the spread input
+      setSpread(dd);
+      setFocus(focusOf((hd === 'near' ? vFar : vNear - dd) + t * dd), false);   // the standard keeps its share of the new spread
+    } else if (hd === 'scene') setFocus(Dinv(x) * 1000, true);
+    else if (hd === 'iris') {   // opening ∝ 1/N, full height at f/4: snap to the marked stop for the new opening
+      const n = stopNearest(Math.max(4, 4 * ry / Math.max(1, Math.abs(y - yA))));
+      if (n !== S.fnumber) { S.fnumber = n; renderShared(); update(); }
+    }
   }, () => { if (container._dragging) { container._dragging = false; update(); } });
   return { g, bNear, bFar, dof };
+}
+
+// Set the spread from a chart: the spread input, or in readings mode the near reading (the far one stays)
+function setSpreadDelta(dd) {
+  const set = (key, v) => { if (fields[key]) fields[key].set(v); else S[key] = v; };
+  if (S.spreadMode !== 'readings') { set('spreadDelta', dd); return; }
+  const sgn = S.railNear >= S.railFar ? 1 : -1;
+  set('railNear', Math.min(100, Math.max(0, +(S.railFar + sgn * dd).toFixed(1))));
+}
+// Spread against f-number with lines of equal blur at the blurrier end, b = √((k Δ / N)² + (N / 750)²),
+// k = max(t, 1 − t) (½ with the standard halfway). Each line is an arch, Δ = N √(b² − (N/750)²) / k, highest at
+// N = 750 b / √2 (Δ = 750 b² / 2k) and ending at N = 750 b, where diffraction alone uses up b. The optimum
+// f-number for each spread, the arches' tops, lies on Δ = N² / (750 k).
+function drawSpreadMap(container, c, N, d, t) {
+  const k = Math.max(t, 1 - t), kd = O.DIFFRACTION_PER_N;
+  const W = chartWidth(container), Hh = Math.round(Math.min(440, Math.max(300, W * 0.55)));
+  const x0 = 40, x1 = W - 14, y0 = 32, y1 = Hh - 40, nMin = 4, nMax = 128, dMin = 0.5, dMax = 40;
+  // spread across, f-number up (both logarithmic)
+  const Xr = v => x0 + (x1 - x0) * Math.log(Math.max(1e-6, v) / dMin) / Math.log(dMax / dMin);   // unclamped: curves leave through the edges (the plot is clipped)
+  const X = v => Xr(Math.min(dMax, Math.max(dMin, v)));
+  const Dinv = x => dMin * Math.exp((Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * Math.log(dMax / dMin));
+  const Y = n => y1 - (y1 - y0) * Math.log(n / nMin) / Math.log(nMax / nMin);
+  const Ninv = y => nMin * Math.exp((y1 - Math.min(y1, Math.max(y0, y))) / (y1 - y0) * Math.log(nMax / nMin));
+  const spreadAt = (b, n) => { const a = b * b - (kd * n) ** 2; return a > 0 ? n * Math.sqrt(a) / k : 0; };
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  const clipId = 'spMap' + Math.random().toString(36).slice(2, 7), defs = svgEl('defs', {}), clip = svgEl('clipPath', { id: clipId });
+  clip.append(svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })); defs.append(clip); svg.append(defs);
+  const gridLayer = svgEl('g', {}); svg.append(gridLayer);   // the grid at the bottom, under the shading and the lines
+  const plot = svgEl('g', { 'clip-path': `url(#${clipId})` }); svg.append(plot);
+  // the acceptable region left of the CoC line tinted green, and the rest orange: the orange is the plot with that
+  // region cut out (even-odd fill), so both tints stay translucent over the grid without mixing
+  const nEnd = Math.min(nMax, 750 * c), pts = [];
+  for (let i = 0; i <= 160; i++) { const n = nMin * Math.pow(nEnd / nMin, i / 160); pts.push(`${Xr(spreadAt(c, n)).toFixed(1)},${Y(n).toFixed(1)}`); }
+  const okPath = nEnd > nMin ? `M${pts.join(' L')} L${x0},${Y(nEnd).toFixed(1)} L${x0},${y1} Z` : '';
+  plot.append(svgEl('path', { d: `M${x0},${y0} H${x1} V${y1} H${x0} Z ${okPath}`, 'fill-rule': 'evenodd', fill: '#ffb347', opacity: .1 }));
+  if (okPath) plot.append(svgEl('path', { d: okPath, fill: SP_TOTAL, opacity: .1 }));
+  // grid
+  const stops = [4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90, 128], every = (y1 - y0) / (stops.length - 1) >= 18 ? 1 : 2;
+  stops.forEach((n, i) => { gridLayer.append(svgEl('line', { x1: x0, x2: x1, y1: Y(n), y2: Y(n), class: 'grid' }));
+    if (i % every === 0) svg.append(svgEl('text', { x: x0 - 4, y: Y(n) + 4, 'text-anchor': 'end' }, String(n))); });
+  for (const v of [0.5, 1, 2, 5, 10, 20, 40]) { gridLayer.append(svgEl('line', { x1: X(v), x2: X(v), y1: y0, y2: y1, class: 'grid' }));
+    svg.append(svgEl('text', { x: X(v), y: y1 + 14, 'text-anchor': v === 40 ? 'end' : 'middle' }, String(v))); }
+  svg.append(svgEl('text', { x: x0 + 4, y: y0 + 12 }, 'f-number'));
+  svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'spread Δ (mm)'));
+  // the lines of equal blur, labelled at their widest point; the CoC's own line in orange
+  const arch = (b, color, width) => {
+    const top = Math.min(nMax, 750 * b), path = [];
+    for (let i = 0; i <= 160; i++) { const n = nMin * Math.pow(top / nMin, i / 160); path.push((i ? 'L' : 'M') + Xr(spreadAt(b, n)).toFixed(1) + ',' + Y(n).toFixed(1)); }
+    plot.append(svgEl('path', { d: path.join(''), fill: 'none', stroke: color, 'stroke-width': width }));
+    const na = 750 * b / Math.SQRT2, da = 750 * b * b / (2 * k);
+    if (na > nMin && na < nMax && da > dMin && da < dMax) svg.append(svgEl('text', { x: X(da) + 4, y: Y(na) + 4, fill: color, class: 'ptlabel' }, +b.toFixed(3) + ''));
+  };
+  for (const b of [0.01, 0.015, 0.02, 0.03, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.5].filter(b => b > c / 4 && b < c * 3 && Math.abs(b / c - 1) > 0.08)) arch(b, '#7c8290', 1);
+  arch(c, '#ffb347', 2);
+  // the optimum for each spread: the widest points of the arches
+  const ridge = [];
+  for (let i = 0; i <= 80; i++) { const n = nMin * Math.pow(nMax / nMin, i / 80); ridge.push((i ? 'L' : 'M') + Xr(n * n / (750 * k)).toFixed(1) + ',' + Y(n).toFixed(1)); }
+  plot.append(svgEl('path', { d: ridge.join(''), fill: 'none', stroke: SP_TOTAL, 'stroke-width': 1.5, 'stroke-dasharray': '6 4' }));
+  // you: the spread and the side panel's f-number
+  const px = X(d), py = Y(Math.min(nMax, Math.max(nMin, N)));
+  svg.append(svgEl('circle', { cx: px, cy: py, r: 5, fill: SP_SET }));
+  pointLabel(svg, px, py, `${fmt(d, 1)} mm, f/${N}`, SP_SET, [x0, x1, y0]);
+  container.replaceChildren(svg);
+  // drag the point: across for the spread, up and down for the f-number (snapped to the marked stops)
+  makeDraggable(container, (x, y) => {
+    const n = stopNearest(Ninv(y)), dd = Math.min(40, Math.max(0.5, Math.round(Dinv(x) * 10) / 10));
+    setSpreadDelta(dd);
+    if (n !== S.fnumber) { S.fnumber = n; renderShared(); }
+    update();
+  });
 }
 
 // Blur at the near and far points against the f-number: defocus falls, diffraction rises, the total has a minimum
