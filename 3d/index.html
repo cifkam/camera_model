@@ -993,7 +993,8 @@ cameraCtrl.onChange(() => { applyCameraMode(); gui.controllersRecursive().forEac
 // (applied once all controllers exist, after the Display folder below)
 
 const fD = gui.addFolder('Depth of field');
-fD.add(P, 'fnumber', [1, 1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90]).name('f-number');
+fD.add(P, 'fnumber', [1, 1.2, 1.4, 1.7, 2, 2.4, 2.8, 3.3, 4, 4.8, 5.6, 6.7, 8, 9.5, 11, 13, 16, 19, 22, 27, 32, 38, 45, 54, 64, 76, 90])   // full and half stops
+  .name('f-number');
 fD.add(P, 'cocMode', ['from print', 'manual']).name('circle of confusion');
 cocCtrls.print.push(
   fD.add(P, 'printLong', 10, 200, 1).name('print long edge (cm)'),

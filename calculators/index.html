@@ -38,7 +38,7 @@
   .unit { color: var(--muted); min-width: 26px; }
   .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
   .warn { color: #ffb347; }   /* a caution: low reliability, vignetting, no data */
-  .note.hold { min-height: 2.5em; min-height: 2lh; }   /* keeps two lines of space (the two warnings can show together), so the cards below do not jump when a warning comes or goes */
+  .note .off { visibility: hidden; }   /* a warning that does not apply: still laid out, so its space is kept at any width */
   .extrap { color: #ffb347; font-style: italic; }   /* a value extrapolated beyond its data sheet: orange like the other cautions, italic to tell it apart */
   td.hl.warn, td.hl2.warn, td.hlm.warn, td.hlc.warn, td.hl.extrap, td.hl2.extrap, td.hlm.extrap, td.hlc.extrap { color: #ffcf8a; text-shadow: 0 0 2px #000; }   /* a lighter orange on a highlighted row */
   td a, .note a { color: var(--accent); }
@@ -79,7 +79,7 @@
   @media (max-width: 560px) { .results.two { grid-template-columns: 1fr; } .results .rowlabel { text-align: left; margin-top: 6px; } }
   /* phones: the text keeps its padding, the charts run across the card's padding and border and most of the page's
      12 px padding, stopping 6 px short of the screen edges so the axis labels are not flush with them */
-  @media (max-width: 560px) { #dofBar, #dofCurves, #rcChart, #dtChart { margin: 0 -21px; } }
+  @media (max-width: 560px) { #dofBar, #dofCurves, #spScene, #spChart, #rcChart, #dtChart { margin: 0 -21px; } }
   .stat { background: var(--panel2); border-radius: 6px; padding: 8px 12px; min-width: 120px; }
   .stat .k { color: var(--muted); font-size: 12px; }
   .stat .v { font-size: 18px; font-variant-numeric: tabular-nums; }
@@ -119,6 +119,7 @@ const S = {
   cocMode: 'print', printLong: 40, viewDist: 50, eyeRes: 1500, coc: 0.1,
   focus: 3,           // m, used by the DoF tools
   chartMin: 0.3, chartMax: 100,   // m, distance axes of the DoF charts
+  spreadMode: 'spread', spreadDelta: 4, railNear: 54, railFar: 50, spreadFocus: 5, spreadPos: 50,   // focus spread tool (mm; spreadFocus: the standard's focus, m; spreadPos: % of the way from the near to the far focus)
   targetFormat: 'APS-C', eqRef: 'diagonal', sceneDist: 3,   // formats tool: the format compared with, the dimension compared, subject distance (m)
   film: 'Ilford HP5+', film2: 'none', meteredTime: 10, rcAperture: 'none', customP: 1.3, customThreshold: 1, rcLog: true, rcMax: 60,   // reciprocity tool (times in s; rcMax = span of the chart's metered axis)
   devTime: 8, devTempFrom: 20, devTempTo: 24, devUnit: 'C', devModel: 'ilford', devPercent: 10, devAgitation: 'intermittent', devChart: 'nomograph', devLog: false,   // development time tool (time in min, temperatures in devUnit)
@@ -128,6 +129,14 @@ const DEFAULTS = { ...S };   // before the stored settings are applied, for the 
 try { Object.assign(S, JSON.parse(localStorage.getItem('phototools') || '{}')); } catch (e) { /* storage unavailable: keep defaults */ }
 function save() { try { localStorage.setItem('phototools', JSON.stringify(S)); } catch (e) { /* ignore */ } }
 
+// a list of full stops with the current f-number inserted in order when it is a half stop between them
+const withCurrent = aps => aps.includes(S.fnumber) || S.fnumber < aps[0] || S.fnumber > aps[aps.length - 1] ? aps : [...aps, S.fnumber].sort((a, b) => a - b);
+// Lines that come and go as an input is dragged would make the page below jump. They are always laid out instead:
+// keptLine(text, shown) hides an inapplicable line but keeps its height (however it wraps), and alternatives([[node,
+// active], …]) stacks texts in one spot so the box is as tall as the longest of them, showing only the active one.
+const keptLine = (content, shown, cls = '') => h('span', { class: (cls + (shown ? '' : ' off')).trim(), style: 'display: block' }, content);
+const alternatives = items => h('span', { style: 'display: grid' },
+  items.map(([content, active, cls = '']) => h('span', { class: (cls + (active ? '' : ' off')).trim(), style: 'grid-area: 1 / 1' }, content)));
 function cocInfo() {
   return S.cocMode === 'manual' ? { coc: S.coc, enlargement: NaN, printBlur: NaN }
                                 : O.cocFromPrint(S.format, S.printLong, S.viewDist, S.eyeRes);
@@ -213,7 +222,7 @@ function renderShared() {
   } }));
   cam.append(checkField({ label: 'set lens when changing format', key: 'autoLens' }));
   cam.append(numField({ label: 'focal length', key: 'focal', min: 4, max: 800, step: 1, unit: 'mm', log: true }));
-  cam.append(selectField({ label: 'f-number', key: 'fnumber', options: O.APERTURES }));
+  cam.append(selectField({ label: 'f-number', key: 'fnumber', options: O.APERTURES_HALF }));   // full stops and the half stops between
   root.append(cam);
 
   const coc = h('div', { class: 'card', id: 'cocCard', style: tools[S.tool] && tools[S.tool].noCoc ? 'display: none' : '' },   // hidden for tools that do not use it
@@ -372,7 +381,7 @@ function drawDofCurves(container, f, c) {
   svg.append(svgEl('line', { x1: x0, x2: x1, y1: y0, y2: y0, class: 'axis' }));
   // the 1:1 line (subject distance itself)
   svg.append(svgEl('line', { x1: X(sMin), y1: Y(sMin), x2: X(sMax), y2: Y(sMax), stroke: '#4fe07a', 'stroke-opacity': .7, 'stroke-dasharray': '3 3' }));
-  const apertures = O.APERTURES.filter(N => N >= 2.8 && N <= 64);
+  const apertures = withCurrent(O.APERTURES.filter(N => N >= 2.8 && N <= 64));   // full stops, plus the current one if it lies between
   for (const N of apertures) {
     const cur = N === S.fnumber;
     // sample densely in log s, and add the exact focus distance where the far limit reaches the
@@ -424,7 +433,7 @@ tools.hyperfocal = {
       h('p', { class: 'note' }, 'Focus at H and everything from H/2 to ∞ is acceptably sharp. Measured from the lens, for the circle of confusion in the side panel. The current focal length and aperture are highlighted.')));
   },
   update() {
-    const c = cocInfo().coc, aps = O.APERTURES.filter(N => N >= 2.8 && N <= 64);
+    const c = cocInfo().coc, aps = withCurrent(O.APERTURES.filter(N => N >= 2.8 && N <= 64));
     // the current lens is inserted into the list at its place; when it coincides with a listed value
     // that row is made twice as tall, so the rows below it stay where they are
     const listed = FOCALS.includes(S.focal);
@@ -449,7 +458,7 @@ tools.table = {
       h('p', { class: 'note' }, 'Near – far limits in metres by focus distance and aperture, for the lens and circle of confusion in the side panel. The current aperture and the row nearest to the focus distance are highlighted.')));
   },
   update() {
-    const f = S.focal, c = cocInfo().coc, aps = O.APERTURES.filter(N => N >= 2.8 && N <= 64);
+    const f = S.focal, c = cocInfo().coc, aps = withCurrent(O.APERTURES.filter(N => N >= 2.8 && N <= 64));
     document.getElementById('tblTitle').textContent = `Depth of field, ${f} mm lens, CoC ${fmt(c, 3)} mm`;
     const rowHl = TABLE_DISTANCES.reduce((a, b) => Math.abs(Math.log(b / S.focus)) < Math.abs(Math.log(a / S.focus)) ? b : a);
     const cell = (N, s) => { const r = O.dof(f, N, c, s * 1000); return Number.isFinite(r.near) ? `${fmtM(r.near / 1000)}\u00a0–\u00a0${fmtM(r.far / 1000)}` : '–'; };
@@ -459,6 +468,263 @@ tools.table = {
     document.getElementById('dofTable').replaceChildren(table);
   },
 };
+
+// ---------------------------------------------------------------------------
+// Tool: focus spread (view cameras)
+// ---------------------------------------------------------------------------
+const spreadDelta = () => S.spreadMode === 'readings' ? Math.abs(S.railNear - S.railFar) : S.spreadDelta;
+const fNum = N => !Number.isFinite(N) ? '–' : 'f/' + (N >= 10 ? N.toFixed(0) : N.toFixed(1));
+// rounded to the marked stops, half stops included
+const stopAtLeast = N => O.APERTURES_HALF.find(a => a >= N * 0.999);            // the widest marked stop not wider than N
+const stopAtMost = N => [...O.APERTURES_HALF].reverse().find(a => a <= N * 1.001);   // the smallest marked stop not smaller than N
+const stopNearest = N => O.APERTURES_HALF.reduce((a, b) => Math.abs(Math.log(b / N)) < Math.abs(Math.log(a / N)) ? b : a);
+// legend lines in the chart colours: [[color, text], text, …] per line
+const colorLegend = rows => rows.flatMap((r, i) => [i ? h('br') : '', ...r.map(p => Array.isArray(p) ? h('span', { style: `color: ${p[0]}` }, p[1]) : p)]);
+tools.spread = {
+  title: 'Focus spread',
+  render(root) {
+    const card = h('div', { class: 'card' }, h('h2', {}, 'Focus spread'),
+      selectField({ label: 'enter', key: 'spreadMode', options: ['spread', 'readings'], labels: k => k === 'readings' ? 'the two rail readings' : 'the spread', onChange: renderTool }));
+    if (![S.railNear, S.railFar].every(v => v >= 0 && v <= 100)) { S.railNear = DEFAULTS.railNear; S.railFar = DEFAULTS.railFar; }   // readings saved before the 0–100 mm range
+    S.spreadDelta = Math.max(0.5, S.spreadDelta);
+    if (S.spreadMode === 'readings') card.append(   // half-millimetre steps, as a rail scale is read
+      numField({ label: 'rail reading, focused on the nearest point', key: 'railNear', min: 0, max: 100, step: 0.5, unit: 'mm', decimals: 1 }),
+      numField({ label: 'rail reading, focused on the farthest point', key: 'railFar', min: 0, max: 100, step: 0.5, unit: 'mm', decimals: 1 }));
+    else card.append(numField({ label: 'focus spread Δ', key: 'spreadDelta', min: 0.5, max: 40, step: 0.5, unit: 'mm', log: true, decimals: 1 }));
+    card.append(numField({ label: 'standard position, from the near focus (0 %) to the far one (100 %)', key: 'spreadPos', min: 0, max: 100, step: 1, unit: '%' }));   // left to right, as in the picture
+    card.append(numField({ label: 'standard focused at (picture below)', key: 'spreadFocus', min: 0.3, max: 1000, step: 0.01, unit: 'm', log: true, decimals: 2 }));
+    card.append(h('p', { class: 'note' }, 'Focus on the nearest and on the farthest point that must be sharp, and note where the standard sits each time: the spread is the travel between the two. It holds for any lens, format or tilt; only the circle of confusion from the side panel enters.'));
+    root.append(card);
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'spStats' }),
+      h('p', { class: 'note', id: 'spNote', style: 'white-space: pre-line' })));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'The two planes of sharp focus'), h('div', { id: 'spScene' }),
+      h('p', { class: 'note', id: 'spSceneNote', style: 'white-space: pre-line' })));
+    root.append(h('div', { class: 'card' }, h('h2', {}, 'Blur at the near and far points vs aperture'), h('div', { id: 'spChart' }),
+      h('p', { class: 'note', id: 'spLegend' })));
+  },
+  update() {
+    const c = cocInfo().coc, d = spreadDelta(), t = 1 - S.spreadPos / 100, mid = Math.abs(t - 0.5) < 1e-9;   // t: the share from the far focus, as the formulas use it
+    const r = O.focusSpread(d, c, t), N = S.fnumber, readings = S.spreadMode === 'readings';
+    const stat = (k, v, cls = 'v') => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: cls }, v));
+    const geoStop = stopAtLeast(r.geometric), within = r.range && [stopAtLeast(r.range[0]), stopAtMost(r.range[1])];
+    const marked = within && within[0] && within[1] && within[0] <= within[1] ? ` (marked f/${within[0]}–f/${within[1]})` : '';
+    const bNear = r.nearBlur(N), bFar = r.farBlur(N), room = r.room(N), most = r.room(r.roomiest);
+    document.getElementById('spStats').replaceChildren(
+      stat('set the standard', readings ? `at ${fmt(S.railFar + t * (S.railNear - S.railFar), 1)} mm` : mid ? `halfway: ${fmt(d / 2, 2)} mm from each` : `${fmt((1 - t) * d, 2)} mm from the near focus`),
+      stat(mid ? 'geometric: Δ / 2c' : 'geometric', `${fNum(r.geometric)}${geoStop ? ` → f/${geoStop}` : ''}`),
+      stat(mid ? 'optimum: √(375 Δ)' : 'optimum', `${fNum(r.hansma)} ≈ f/${stopNearest(r.hansma)}`),
+      stat('blur at the optimum', `${fmt(r.optimumBlur, 3)} mm`, r.optimumBlur > c ? 'v warn' : 'v'),
+      stat('apertures within the CoC', r.range ? `${fNum(r.range[0])} – ${fNum(r.range[1])}` : 'none', r.range ? 'v' : 'v warn'),
+      stat(`at f/${N}: near / far`, `${fmt(bNear, 3)} / ${fmt(bFar, 3)} mm`, Math.max(bNear, bFar) > c ? 'v warn' : 'v'),
+      stat(`room for the standard at f/${N}`, room >= 0 ? `±${fmt(room, 2)} mm` : 'none', room >= 0 ? 'v' : 'v warn'),
+      stat('most room', most > 0 ? `±${fmt(most, 2)} mm at ${fNum(r.roomiest)}` : 'none', most > 0 ? 'v' : 'v warn'));
+    document.getElementById('spNote').replaceChildren(   // kept lines and stacked alternatives: dragging does not move the page
+      keptLine(`Spread Δ = ${fmt(d, 2)} mm, CoC ${fmt(c, 3)} mm on film. Blur at each end: defocus (the film's distance from that image) / N and diffraction N / 750 mm, combined as √(a² + b²).`, true),
+      keptLine(`Off the midpoint the blurrier end decides: the apertures are those of a ${fmt(2 * Math.max(t, 1 - t) * d, 2)} mm spread set halfway.`, !mid),
+      alternatives([
+        [r.range ? `Defocus sets the widest usable aperture, ${fNum(r.range[0])}, and diffraction the smallest, ${fNum(r.range[1])}${marked}. The optimum gives the sharpest near and far points; the plane of focus itself is sharpest wider open.` : 'Defocus sets the widest usable aperture, f/00, and diffraction the smallest, f/00 (marked f/00–f/00). The optimum gives the sharpest near and far points; the plane of focus itself is sharpest wider open.', !!r.range],
+        [`No aperture keeps the blur within the CoC: diffraction is the limit. ${fNum(r.hansma)} gives the least blur (${fmt(r.optimumBlur, 3)} mm); a smaller spread (tilt or swing, or a smaller subject depth) would do better.`, !r.range, 'warn'],
+      ]));
+    const sc = drawSpreadScene(document.getElementById('spScene'), d, c, N, t, r), g = sc.g;
+    if (Math.abs(S.spreadFocus * 1000 - g.s) > 1e-6 * g.s) { const m = +(g.s / 1000).toPrecision(3); if (fields.spreadFocus) fields.spreadFocus.set(m); else S.spreadFocus = m; }   // kept within reach
+    const blur = Math.max(sc.bNear, sc.bFar);
+    document.getElementById('spSceneNote').replaceChildren(...colorLegend([
+      [`Standard ${fmt(g.v, 1)} mm behind the lens, focused at ${fmtDist(g.s / 1000)}. `, ['#c9a0ff', 'Near plane'], ` ${fmtDist(g.sNear / 1000)} (film at ${fmt(g.vNear, 1)} mm), `,
+       ['#7fd3ff', 'far plane'], ` ${g.sFar === Infinity ? '∞, as far as the standard can go' : `${fmtDist(g.sFar / 1000)} (${fmt(g.vFar, 1)} mm)`}.`],
+      [`Left: the light cones meeting at the two images, drawn steeper than they are. The bars on the standard are where they cross the film, ${fmt(blur, 3)} mm at f/${N}; `, ['#ffb347', 'orange'], `: the CoC. Dotted: the film position for ∞.`],
+      [['#4fe07a', 'Shaded green'], room >= 0 ? `: where the standard may sit at f/${N} with both planes acceptable. ` : `: none at f/${N}, no position keeps both planes acceptable. `, ['#3ee6ff', 'Shaded'], `: the depth of field.`],
+      [['#f2f3f5', 'White'], ': drag the standard to move it within the spread; drag a dashed image line or its focus to move both film positions.'],
+    ]));
+    drawSpreadBlur(document.getElementById('spChart'), r, c, N);
+    document.getElementById('spLegend').replaceChildren(...colorLegend([
+      [['#4fe07a', 'Green'], mid ? ': total blur at the near and far points.' : `: total blur at the blurrier end (${t > 0.5 ? 'far' : 'near'}).`],
+      [['#ff6b6b', 'Red'], ': defocus, shrinks as you stop down. ', ['#5b7cff', 'Blue'], ': diffraction, grows as you stop down.'],
+      [['#ffb347', 'Orange'], ': the CoC, too blurry above it. ', ['#4fe07a', 'Shaded green'], ': acceptable apertures.'],
+      [['#f2f3f5', 'White'], ': your f-number; drag to change.'],
+    ]));
+  },
+};
+
+// The two film positions behind the lens and the two planes they focus in front of it. Two panels with their own
+// scales: the rail magnified (mm, the light cones drawn steeper so the blur discs show) and the scene on a log axis.
+const SP_NEAR = '#c9a0ff', SP_FAR = '#7fd3ff';   // the near and the far plane, and their image positions
+const SP_SET = '#f2f3f5';   // what you set: the standard and its focus here, the f-number in the blur chart
+// the standard focuses at S.spreadFocus and sits t·d from the far image, (1 − t)·d from the near one
+function spreadGeometry(d, t) {
+  const f = S.focal, sMax = Math.min(1e6, t * d > 0 ? f * (f + t * d) / (t * d) : Infinity);   // beyond sMax the far image would fall inside f
+  const s = Math.min(sMax, Math.max(2 * f, S.spreadFocus * 1000));
+  const v = f * s / (s - f), vFar = v - t * d, vNear = vFar + d;
+  const sAt = w => w - f > 1e-9 ? f * w / (w - f) : Infinity;
+  return { f, s, v, vNear, vFar, sNear: sAt(vNear), sFar: sAt(vFar), sMax, atInfinity: s >= sMax - 1e-6 };
+}
+function drawSpreadScene(container, d, c, N, t, r) {
+  const g = spreadGeometry(d, t), f = g.f;
+  const W = chartWidth(container), Hh = 256, yT = 34, yB = 190, yA = (yT + yB) / 2;
+  const cx0 = 8, cx1 = Math.round(W * 0.36), lx = Math.round(W * 0.41), sx0 = Math.round(W * 0.46), xInf = W - 12, sx1 = xInf - 30;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  svg.append(svgEl('line', { x1: cx0, x2: xInf, y1: yA, y2: yA, stroke: '#5f6572' }));   // the lens axis
+  // --- behind the lens: the rail, magnified; larger extensions to the left -------------------------------------
+  if (!container._dragging) { const pad = Math.max(d * 0.6, 1); container._span = [Math.min(f, g.vFar) - pad, g.vNear + pad]; }
+  const [vLo, vHi] = container._span;
+  const Xc = v => cx1 - (v - vLo) / (vHi - vLo) * (cx1 - cx0), Vinv = x => vLo + (cx1 - Math.min(cx1, Math.max(cx0, x))) / (cx1 - cx0) * (vHi - vLo);
+  const ky = 26 / c;   // vertical scale, px per mm: the circle of confusion is 26 px tall
+  const clipId = 'spClip' + Math.random().toString(36).slice(2, 7);
+  const defs = svgEl('defs', {}), clip = svgEl('clipPath', { id: clipId });
+  clip.append(svgEl('rect', { x: cx0, y: yT, width: cx1 - cx0, height: yB - yT })); defs.append(clip); svg.append(defs);
+  const cam = svgEl('g', { 'clip-path': `url(#${clipId})` }); svg.append(cam);
+  const half = (vi, v) => f / (2 * N) * Math.abs(vi - v) / vi * ky;   // half-height of the cone converging to vi, at v
+  // each cone is drawn only as far as it matters: up to the film or to its own image, whichever lies farther from
+  // the lens (the near cone ends at its image, beyond the film; the far cone at the film, where it makes its disc)
+  for (const [vi, col] of [[g.vNear, SP_NEAR], [g.vFar, SP_FAR]]) {
+    const vEnd = Math.max(vi, g.v), p0 = [Xc(vLo), half(vi, vLo)], pi = Xc(vi), pe = [Xc(vEnd), half(vi, vEnd)];
+    let d = `M${p0[0]},${yA - p0[1]} L${pi},${yA} L${p0[0]},${yA + p0[1]} Z`;
+    if (vEnd > vi + 1e-9) d += ` M${pe[0]},${yA - pe[1]} L${pi},${yA} L${pe[0]},${yA + pe[1]} Z`;   // past the image, diverging again to the film
+    cam.append(svgEl('path', { d, fill: col, 'fill-opacity': .1, stroke: col, 'stroke-opacity': .7 }));
+    cam.append(svgEl('line', { x1: Xc(vi), x2: Xc(vi), y1: yT, y2: yB, stroke: col, 'stroke-dasharray': '4 3' }));
+  }
+  if (f > vLo && f < vHi) {   // the infinity position: the film one focal length behind the lens
+    cam.append(svgEl('line', { x1: Xc(f), x2: Xc(f), y1: yT, y2: yB, stroke: '#9096a0', 'stroke-dasharray': '2 3' }));
+    svg.append(svgEl('text', { x: Xc(f), y: yT - 6, 'text-anchor': 'middle', fill: '#9096a0' }, '∞'));   // always, also when the far image reaches it
+  }
+  const xm = Xc(g.v), bNear = f / N * (g.vNear - g.v) / g.vNear, bFar = f / N * (g.v - g.vFar) / g.vFar;   // blur disc diameters on the film, mm
+  // where the standard may sit at f/N with both ends within the CoC: up to N·c' from each image (c' after diffraction)
+  const reach = r.room(N) >= 0 ? N * Math.sqrt(c * c - (N * O.DIFFRACTION_PER_N) ** 2) : null;
+  if (reach !== null) { const a = Xc(g.vFar + reach), b = Xc(g.vNear - reach); cam.append(svgEl('rect', { x: a, y: yT, width: Math.max(1, b - a), height: yB - yT, fill: SP_TOTAL, opacity: .14 })); }
+  cam.append(svgEl('line', { x1: xm, x2: xm, y1: yT, y2: yB, stroke: SP_SET, 'stroke-width': 2 }));   // the standard
+  cam.append(svgEl('line', { x1: xm - 4, x2: xm - 4, y1: yA - bNear * ky / 2, y2: yA + bNear * ky / 2, stroke: SP_NEAR, 'stroke-width': 4 }));
+  cam.append(svgEl('line', { x1: xm + 4, x2: xm + 4, y1: yA - bFar * ky / 2, y2: yA + bFar * ky / 2, stroke: SP_FAR, 'stroke-width': 4 }));
+  cam.append(svgEl('line', { x1: xm + 11, x2: xm + 11, y1: yA - c * ky / 2, y2: yA + c * ky / 2, stroke: '#ffb347', 'stroke-width': 3 }));   // the CoC, for comparison
+  svg.append(svgEl('circle', { cx: xm, cy: yT, r: 5, fill: SP_SET }));
+  const tight = Xc(g.vFar) - Xc(g.vNear) < 44;   // too close for two numbers side by side: the far one drops a row
+  const inPanel = x => Math.min(cx1 - 19, Math.max(cx0 + 19, x));
+  svg.append(svgEl('text', { x: inPanel(Xc(g.vNear)), y: yB + 14, 'text-anchor': 'middle', fill: SP_NEAR, class: 'ptlabel' }, fmt(g.vNear, 1)));
+  svg.append(svgEl('text', { x: inPanel(Xc(g.vFar)), y: yB + (tight ? 27 : 14), 'text-anchor': 'middle', fill: SP_FAR, class: 'ptlabel' }, fmt(g.vFar, 1)));
+  const dInf = Xc(f) - xm, nearInf = f > vLo && f < vHi && Math.abs(dInf) < 34;   // the ∞ mark close by: the label turns away from it
+  svg.append(svgEl('text', { x: nearInf ? xm - Math.sign(dInf || 1) * 4 : xm, y: yT - 10, 'text-anchor': nearInf ? (dInf >= 0 ? 'end' : 'start') : 'middle', fill: SP_SET, class: 'ptlabel' }, 'standard'));
+  svg.append(svgEl('text', { x: cx0 + 2, y: Hh - 22 }, 'lens to film (mm)'));
+  // --- the lens ---------------------------------------------------------------------------------------------
+  svg.append(svgEl('ellipse', { cx: lx, cy: yA, rx: 5, ry: 44, fill: '#4fa8ff', 'fill-opacity': .3, stroke: '#4fa8ff' }));
+  svg.append(svgEl('text', { x: lx, y: yA - 52, 'text-anchor': 'middle', fill: '#4fa8ff' }, 'lens'));
+  svg.append(svgEl('text', { x: lx, y: yA + 64, 'text-anchor': 'middle', fill: '#4fa8ff' }, `${f} mm`));
+  // --- in front of the lens: the scene, log distance with ∞ after a break -----------------------------------------
+  const dmin = Math.min(0.5, g.sNear / 1000 / 1.6), dmax = 1000;
+  const Xs = m => m === Infinity ? xInf : sx0 + (sx1 - sx0) * (Math.log(Math.min(dmax, Math.max(dmin, m))) - Math.log(dmin)) / (Math.log(dmax) - Math.log(dmin));
+  const Dinv = x => Math.exp(Math.log(dmin) + (Math.min(sx1, Math.max(sx0, x)) - sx0) / (sx1 - sx0) * (Math.log(dmax) - Math.log(dmin)));
+  const dof = O.dof(f, N, c, g.s);
+  if (Number.isFinite(dof.near)) {   // the depth of field of the standard's focus at the panel's aperture (defocus only)
+    const a = Xs(dof.near / 1000), b = Xs(dof.far / 1000);
+    svg.append(svgEl('rect', { x: a, y: yT, width: Math.max(1, b - a), height: yB - yT, fill: '#3ee6ff', opacity: .14 }));
+  }
+  const yAx = yB + 2;
+  svg.append(svgEl('line', { x1: sx0, x2: sx1 + 8, y1: yAx, y2: yAx, class: 'axis' }));
+  svg.append(svgEl('line', { x1: sx1 + 20, x2: xInf, y1: yAx, y2: yAx, class: 'axis' }));
+  svg.append(svgEl('path', { d: `M${sx1 + 9},${yAx + 5} L${sx1 + 14},${yAx - 5} M${sx1 + 15},${yAx + 5} L${sx1 + 20},${yAx - 5}`, class: 'axis', fill: 'none' }));
+  for (const m of logTicks(dmin, dmax, Math.max(3, Math.floor((sx1 - sx0) / 34))).concat([Infinity])) {
+    svg.append(svgEl('line', { x1: Xs(m), x2: Xs(m), y1: yAx - 3, y2: yAx + 3, class: 'axis' }));
+    svg.append(svgEl('text', { x: Xs(m), y: yAx + 15, 'text-anchor': 'middle' }, m === Infinity ? '∞' : tickLabel(m)));
+  }
+  svg.append(svgEl('text', { x: xInf, y: Hh - 22, 'text-anchor': 'end' }, 'distance from the lens (m)'));
+  // the near label ends at its line and the far one starts at its line; near the edges, or when the two would
+  // overlap, a label turns inward or drops to a second row inside the panel
+  const tw = t => t.length * 6.5, xn = Xs(g.sNear / 1000), xF = Xs(g.sFar / 1000);
+  const tNear = `near ${fmtDist(g.sNear / 1000)}`, tFar = `far ${g.sFar === Infinity ? '∞' : fmtDist(g.sFar / 1000)}`;
+  const nearAnchor = xn - tw(tNear) - 4 < sx0 - 10 ? 'start' : 'end', farAnchor = xF + tw(tFar) + 4 > W - 2 ? 'end' : 'start';
+  const extent = (x, t, a) => a === 'end' ? [x - tw(t) - 4, x] : [x, x + tw(t) + 4];
+  const [na, nb] = extent(xn, tNear, nearAnchor), [fa, fb] = extent(xF, tFar, farAnchor), clash = nb > fa && fb > na;
+  for (const [x, col] of [[xn, SP_NEAR], [xF, SP_FAR]]) svg.append(svgEl('line', { x1: x, x2: x, y1: yT, y2: yB, stroke: col, 'stroke-width': 2 }));
+  svg.append(svgEl('text', { x: xn + (nearAnchor === 'end' ? -3 : 3), y: yT - 6, 'text-anchor': nearAnchor, fill: SP_NEAR, class: 'ptlabel' }, tNear));
+  svg.append(svgEl('text', { x: xF + (farAnchor === 'end' ? -3 : 3), y: clash ? yT + 12 : yT - 6, 'text-anchor': farAnchor, fill: SP_FAR, class: 'ptlabel' }, tFar));
+  const xf = Xs(g.s / 1000);
+  svg.append(svgEl('line', { x1: xf, x2: xf, y1: yA - 30, y2: yB, stroke: SP_SET, 'stroke-width': 2 }));
+  svg.append(svgEl('circle', { cx: xf, cy: yA - 30, r: 5, fill: SP_SET }));
+  svg.append(svgEl('text', { x: xf, y: yA - 38, 'text-anchor': 'middle', fill: SP_SET, class: 'ptlabel' }, fmtDist(g.s / 1000)));
+  container.replaceChildren(svg);
+  // drags: the standard moves within the spread (the two images stay put); a dashed image line, or the focus in
+  // front of the lens, moves both film positions together with the standard where it is
+  const setKey = (key, v) => { if (fields[key]) fields[key].set(v); else S[key] = v; };
+  const focusOf = v => v - f > 1e-6 ? f * v / (v - f) : 1e6;
+  const setFocus = (mm, round) => { const v = Math.min(g.sMax, Math.max(2 * f, mm)) / 1000; setKey('spreadFocus', round ? +v.toPrecision(3) : v); update(); };
+  makeDraggable(container, (x, y, phase) => {
+    if (phase === 'down') {
+      const cand = x < lx ? [['std', Math.abs(x - xm) - 2], ['pair', Math.abs(x - Xc(g.vNear))], ['pair', Math.abs(x - Xc(g.vFar))]] : [['scene', Math.abs(x - xf)]];
+      const [hd, dist] = cand.reduce((a, b) => b[1] < a[1] ? b : a);   // the standard wins a tie with an image line
+      container._handle = dist <= DRAG_REACH ? hd : null;
+      container._dragging = !!container._handle;
+      container._grab = { v: Vinv(x), vFar: g.vFar };
+    }
+    const hd = container._handle, gr = container._grab;
+    if (hd === 'std') {   // within the spread: from the near image (0 %) to the far one (100 %)
+      const pos = Math.round((1 - Math.min(1, Math.max(0, (Vinv(x) - gr.vFar) / d))) * 100);
+      setKey('spreadPos', pos); setFocus(focusOf(gr.vFar + (1 - pos / 100) * d), false);
+    } else if (hd === 'pair') setFocus(focusOf(Math.max(f, gr.vFar + Vinv(x) - gr.v) + t * d), false);
+    else if (hd === 'scene') setFocus(Dinv(x) * 1000, true);
+  }, () => { if (container._dragging) { container._dragging = false; update(); } });
+  return { g, bNear, bFar, dof };
+}
+
+// Blur at the near and far points against the f-number: defocus falls, diffraction rises, the total has a minimum
+// the blur chart's own colours, none shared with the side view above (violet / light blue there mean near / far)
+const SP_TOTAL = '#4fe07a', SP_DEFOCUS = '#ff6b6b', SP_DIFF = '#5b7cff';
+function drawSpreadBlur(container, r, c, N) {
+  const W = chartWidth(container), Hh = Math.round(Math.min(420, Math.max(260, W * 0.5)));
+  const x0 = 46, x1 = W - 14, y0 = 32, y1 = Hh - 40, nMin = 4, nMax = 128;
+  const X = n => x0 + (x1 - x0) * Math.log(n / nMin) / Math.log(nMax / nMin);
+  const Ninv = x => nMin * Math.exp((Math.min(x1, Math.max(x0, x)) - x0) / (x1 - x0) * Math.log(nMax / nMin));
+  const top = Math.max(2 * c, 1.6 * r.optimumBlur), bStep = [0.005, 0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1].find(st => top / st <= 6) || 1;
+  const yMax = Math.ceil(top / bStep) * bStep, Y = b => y1 - (y1 - y0) * Math.min(b, yMax) / yMax;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${Hh}` });
+  if (r.range) { const a = X(Math.max(nMin, r.range[0])), b = X(Math.min(nMax, r.range[1])); if (b > a) svg.append(svgEl('rect', { x: a, y: Y(c), width: b - a, height: y1 - Y(c), fill: SP_TOTAL, opacity: .1 })); }
+  const stops = [4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90, 128], every = (x1 - x0) / (stops.length - 1) >= 30 ? 1 : 2;
+  stops.forEach((n, i) => {
+    svg.append(svgEl('line', { x1: X(n), x2: X(n), y1: y0, y2: y1, class: 'grid' }));
+    if (i % every === 0) svg.append(svgEl('text', { x: X(n), y: y1 + 14, 'text-anchor': 'middle' }, String(n)));
+  });
+  for (let b = bStep; b <= yMax + 1e-9; b += bStep) {
+    svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(b), y2: Y(b), class: 'grid' }));
+    svg.append(svgEl('text', { x: x0 - 4, y: Y(b) + 4, 'text-anchor': 'end' }, +b.toFixed(3) + ''));
+  }
+  svg.append(svgEl('text', { x: x0 - 4, y: y0 - 16, 'text-anchor': 'end' }, 'mm'));   // the unit, above its axis
+  svg.append(svgEl('text', { x: x1, y: Hh - 4, 'text-anchor': 'end' }, 'f-number'));
+  svg.append(svgEl('text', { x: x0 + 4, y: y0 + 12 }, 'blur'));
+  if (c < yMax) svg.append(svgEl('rect', { x: x0, y: y0, width: x1 - x0, height: Y(c) - y0, fill: '#ffb347', opacity: .1 }));   // blur beyond the CoC
+  svg.append(svgEl('line', { x1: x0, x2: x1, y1: Y(c), y2: Y(c), stroke: '#ffb347', 'stroke-width': 1.5 }));   // the CoC
+  svg.append(svgEl('text', { x: x0 + 4, y: Y(c) - 5, fill: '#ffb347', class: 'ptlabel' }, `CoC ${fmt(c, 3)} mm`));
+  const curve = (fn, color, width, dash) => {   // cut where it leaves the top of the chart
+    let d = '', pen = false;
+    for (let i = 0; i <= 200; i++) {
+      const n = nMin * Math.pow(nMax / nMin, i / 200), b = fn(n);
+      if (b > yMax) { pen = false; continue; }
+      d += (pen ? 'L' : 'M') + X(n).toFixed(1) + ',' + Y(b).toFixed(1); pen = true;
+    }
+    svg.append(svgEl('path', { d, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-dasharray': dash, 'stroke-linejoin': 'round' }));
+  };
+  curve(r.defocus, SP_DEFOCUS, 1.4, '5 4');
+  curve(r.diffraction, SP_DIFF, 1.4, '5 4');
+  curve(r.blur, SP_TOTAL, 2.2, null);
+  // name the dashed curves where they run clear of the rest: defocus at the right end, diffraction at the left
+  const lab = (x, b, text, color, anchor) => { if (b <= yMax) svg.append(svgEl('text', { x, y: Y(b) - 6, 'text-anchor': anchor, fill: color, class: 'ptlabel' }, text)); };
+  lab(x1 - 4, r.defocus(nMax), 'defocus', SP_DEFOCUS, 'end');
+  lab(x0 + 4, r.diffraction(nMin), 'diffraction', SP_DIFF, 'start');
+  if (r.hansma >= nMin && r.hansma <= nMax) {   // the optimum
+    const ox = X(r.hansma), oy = Y(r.optimumBlur);
+    svg.append(svgEl('circle', { cx: ox, cy: oy, r: 4, fill: SP_TOTAL }));
+    svg.append(svgEl('text', { x: ox, y: oy + 18, 'text-anchor': 'middle', fill: SP_TOTAL, class: 'ptlabel' }, `optimum ${fNum(r.hansma)}`));
+  }
+  const xs = X(N), bN = r.blur(N);   // the side panel's aperture
+  if (N >= nMin && N <= nMax) {
+    svg.append(svgEl('line', { x1: xs, x2: xs, y1: Y(bN), y2: y1, stroke: SP_SET, 'stroke-width': 1.5 }));
+    if (bN <= yMax) {
+      svg.append(svgEl('circle', { cx: xs, cy: Y(bN), r: 4, fill: SP_SET }));
+      pointLabel(svg, xs, Y(bN), `f/${N}: ${fmt(bN, 3)} mm`, SP_SET, [x0, x1, y0]);
+    }
+  }
+  container.replaceChildren(svg);
+  // one marker: drag anywhere to pick the marked stop under the pointer
+  makeDraggable(container, x => {
+    const n = stopNearest(Ninv(x));
+    if (n !== S.fnumber) { S.fnumber = n; renderShared(); update(); }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Tool: formats, crop factors and equivalent lenses
@@ -622,7 +888,7 @@ tools.reciprocity = {
   renderPanel(root) {
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Metered exposure'),
       numField({ label: 'time', key: 'meteredTime', min: 0.1, max: 3600, step: 0.01, unit: 's', log: true, decimals: 2 }),
-      selectField({ label: 'aperture', key: 'rcAperture', options: ['none'].concat(O.APERTURES.map(String)) }),
+      selectField({ label: 'aperture', key: 'rcAperture', options: ['none'].concat(O.APERTURES_HALF.map(String)) }),
       h('p', { class: 'note' }, 'What the meter asks for; the film needs the corrected time. The aperture is optional: with it, the result also gives the opened-up aperture to use instead.')));
     const card = h('div', { class: 'card' }, h('h2', {}, 'Film'),
       selectField({ label: 'film', key: 'film', options: FILM_NAMES, onChange: () => { renderShared(); update(); } }),
@@ -636,7 +902,7 @@ tools.reciprocity = {
   },
   render(root) {
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'rcStats' }),
-      h('p', { class: 'note', id: 'rcNote', style: 'white-space: pre-line' }), h('p', { class: 'note warn', id: 'rcWarn', style: 'white-space: pre-line' })));
+      h('p', { class: 'note', id: 'rcNote', style: 'white-space: pre-line' }), h('p', { class: 'note warn', id: 'rcWarn' })));
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Corrected vs metered time'), h('div', { id: 'rcChart' }),
       h('div', { class: 'inline-fields' },
         selectField({ label: 'metered axis up to', key: 'rcMax', options: [5, 10, 30, 60, 120, 300, 600, 1800, 3600], labels: fmtAxisTime }),
@@ -656,7 +922,7 @@ tools.reciprocity = {
     const hasTc = Number.isFinite(r.tc);
     const none = hasTc && r.stops < 0.005, N = S.rcAperture === 'none' ? null : +S.rcAperture;
     const nOpen = N && !none ? N / Math.pow(2, r.stops / 2) : null;                     // the aperture that gives the correction at the metered time
-    const nearest = nOpen ? O.APERTURES.reduce((a, b) => Math.abs(Math.log(b / nOpen)) < Math.abs(Math.log(a / nOpen)) ? b : a) : null;
+    const nearest = nOpen ? O.APERTURES_HALF.reduce((a, b) => Math.abs(Math.log(b / nOpen)) < Math.abs(Math.log(a / nOpen)) ? b : a) : null;
     document.getElementById('rcStats').replaceChildren(
       stat('corrected time', hasTc ? fmtTime(r.tc) : 'no data'),
       stat('correction (stops)', hasTc ? (none ? 'none' : `+${r.stops.toFixed(2)}`) : '–'),
@@ -664,14 +930,16 @@ tools.reciprocity = {
     const srcLine = f => [`${f.name}: ${modelText(f)}. Source: `, f.url ? h('a', { href: f.url, target: '_blank', rel: 'noopener' }, f.source) : f.source, '.'];
     const adviceLine = f => f.reliability && !['low', 'heuristic', 'custom'].includes(f.reliability) ? [` ${f.advice}`] : [];
     document.getElementById('rcNote').replaceChildren(...srcLine(film), ...adviceLine(film), ...(film2 ? ['\n', ...srcLine(film2), ...adviceLine(film2)] : []));
+    // the lines that depend on the metered time are kept (hidden when they do not apply), so dragging the time does
+    // not move the page; the ones that depend only on the film come and go with the film
     const warns = [];
-    if (r.status === 'extrapolated') warns.push(`Extrapolated: the data sheet stops at ${film.points[film.points.length - 1][0]} s; the curve is continued with its last slope.`);
-    if (r.status === 'nodata') warns.push(film.model === 'none' ? `No manufacturer data beyond ${film.upTo} s: Kodak says to make tests under your conditions.` : `No manufacturer data beyond ${film.upTo} s.`);
-    if (!film.verified) warns.push('Unverified: this table is quoted second-hand, not from the manufacturer’s sheet.');
-    if (film.reliability === 'low') warns.push(`Low reliability: ${film.advice}`);
-    if (film.reliability === 'heuristic') warns.push(`Not measured: ${film.advice}`);
-    if (/XP2/.test(film.name)) warns.push('C-41 films also shift colour balance at long times; the correction only covers density.');
-    document.getElementById('rcWarn').textContent = warns.join('\n');
+    if (film.model === 'table') warns.push(keptLine(`Extrapolated: the data sheet stops at ${film.points[film.points.length - 1][0]} s; the curve is continued with its last slope.`, r.status === 'extrapolated'));
+    if (film.model === 'none' || film.model === 'step') warns.push(keptLine(film.model === 'none' ? `No manufacturer data beyond ${film.upTo} s: Kodak says to make tests under your conditions.` : `No manufacturer data beyond ${film.upTo} s.`, r.status === 'nodata'));
+    if (!film.verified) warns.push(keptLine('Unverified: this table is quoted second-hand, not from the manufacturer’s sheet.', true));
+    if (film.reliability === 'low') warns.push(keptLine(`Low reliability: ${film.advice}`, true));
+    if (film.reliability === 'heuristic') warns.push(keptLine(`Not measured: ${film.advice}`, true));
+    if (/XP2/.test(film.name)) warns.push(keptLine('C-41 films also shift colour balance at long times; the correction only covers density.', true));
+    document.getElementById('rcWarn').replaceChildren(...warns);
     drawReciprocity(document.getElementById('rcChart'), film, film2, tm);
     // standard times
     const rowHl = RECIP_TIMES.reduce((a, b) => Math.abs(Math.log(b / tm)) < Math.abs(Math.log(a / tm)) ? b : a);
@@ -824,7 +1092,7 @@ tools.timetemp = {
   },
   render(root) {
     root.append(h('div', { class: 'card' }, h('h2', {}, 'Result'), h('div', { class: 'results', id: 'dtStats' }),
-      h('p', { class: 'note', id: 'dtNote', style: 'white-space: pre-line' }), h('p', { class: 'note warn hold', id: 'dtWarn', style: 'white-space: pre-line' })));
+      h('p', { class: 'note', id: 'dtNote', style: 'white-space: pre-line' }), h('p', { class: 'note warn', id: 'dtWarn' })));
     // one chart at a time, chosen by the dropdown above it: the nomograph (default) or the time-vs-temperature curve
     root.append(h('div', { class: 'card' }, h('h2', { id: 'dtChartTitle' }),
       h('div', { class: 'inline-fields', style: 'margin: 0 0 8px' },
@@ -847,10 +1115,11 @@ tools.timetemp = {
       : ['Ilford chart: ln(t / t₂₀) = −0.103·ΔT + 0.0021·ΔT² (ΔT from 20 °C), fitted to ', h('a', { href: ILFORD_TT_URL, target: '_blank', rel: 'noopener' }, 'Ilford’s time/temperature compensation chart'), ' within its 15 s rounding.'];
     document.getElementById('dtNote').replaceChildren(...rule, ...(cont ? [' Continuous agitation: 15 % off, as the ', h('a', { href: MDC_TT_URL, target: '_blank', rel: 'noopener' }, 'Massive Dev Chart converter'), ' applies.'] : []),
       '\nKeep every bath, the wash included, within about 5 °C of the developer.');
-    const warns = [];
-    if (r.time < 5) warns.push('Under 5 min: Ilford advises against it, development may be uneven. Use a cooler developer or a higher dilution.');
-    if (r.status === 'extrapolated') warns.push(`Beyond the 18–27 °C Ilford’s chart covers: extrapolated from its curve.`);
-    document.getElementById('dtWarn').textContent = warns.join('\n');
+    // both warnings are always there, the ones that do not apply only hidden: the box keeps its height however the
+    // lines wrap (two lines on a computer, four on a phone)
+    document.getElementById('dtWarn').replaceChildren(
+      keptLine('Under 5 min: Ilford advises against it, development may be uneven. Use a cooler developer or a higher dilution.', r.time < 5),
+      keptLine('Beyond the 18–27 °C Ilford’s chart covers: extrapolated from its curve.', r.status === 'extrapolated'));
     const chart = document.getElementById('dtChart');
     if (S.devChart === 'curve') {
       document.getElementById('dtChartTitle').textContent = 'Time vs temperature';

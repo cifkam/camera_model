@@ -25,6 +25,16 @@ Each tab can be linked to directly by its id: `calculators/#dof`, `#hyperfocal`,
   logarithmic distance axis and near/far-vs-focus curves for every aperture, both draggable.
 - Hyperfocal table by focal length and aperture.
 - DoF table (near – far by focus distance and aperture) for the current lens.
+- Focus spread (view cameras): from the rail travel between focusing on the nearest and the
+  farthest point (or the two rail readings), where to set the standard, the geometric aperture
+  Δ / 2c, Hansma's optimum √(375 Δ) that balances defocus against diffraction, the range of
+  apertures that keep the blur within the circle of confusion; the standard can also sit off the
+  midpoint (the blurrier end then decides), with the room the standard has at each aperture
+  (widest at f/(530 c), where it is 750 c² − Δ); a side view of the two film
+  positions and the two planes they focus (the light cones behind the lens, the blur discs
+  against the CoC, the room for the standard shaded, the depth of field in front; drag the
+  standard within the spread, or an image line or the focus to move both) and the blur against
+  the f-number (after Q.-T. Luong's "How to select the f-stop").
 - Formats: crop factors, the equivalent focal length and aperture on another format (matched by
   diagonal, width or height), angles of view, scene coverage at the focus distance, the formats
   drawn to scale and a comparison table of all formats.

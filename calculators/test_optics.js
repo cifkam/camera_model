@@ -34,6 +34,28 @@ check('angle of view', O.angleOfView(120, 150) * 180 / Math.PI, 2 * Math.atan(60
 // focus spread and tilt
 check('focus spread, geometric', O.focusSpread(4, 0.1).geometric, 20);
 check('focus spread, Hansma', O.focusSpread(4, 0.1).hansma, Math.sqrt(1500));
+// Luong's table: 1 mm -> N 19.4, 10 mm -> N 61.2; the blur at the optimum is N / 530 = 0.0365 sqrt(D)
+check('focus spread, optimum for 1 mm (Luong 19.4)', O.focusSpread(1, 0.1).hansma, 19.4, 0.01);
+check('focus spread, optimum for 10 mm (Luong 61.2)', O.focusSpread(10, 0.1).hansma, 61.2, 0.01);
+check('focus spread, blur at the optimum (Luong 0.0365 sqrt(D))', O.focusSpread(4, 0.1).optimumBlur, 0.0365 * 2, 0.01);
+check('focus spread, defocus equals diffraction at the optimum', O.focusSpread(4, 0.1).defocus(O.focusSpread(4, 0.1).hansma), O.focusSpread(4, 0.1).diffraction(O.focusSpread(4, 0.1).hansma));
+const fsr = O.focusSpread(4, 0.1);
+check('focus spread, blur at the widest acceptable aperture is c', fsr.blur(fsr.range[0]), 0.1);
+check('focus spread, blur at the smallest acceptable aperture is c', fsr.blur(fsr.range[1]), 0.1);
+check('focus spread, widest acceptable aperture is beyond the geometric one', fsr.range[0] > fsr.geometric ? 1 : 0, 1);
+check('focus spread, no acceptable aperture past 750 c²', O.focusSpread(8, 0.1).range, null);
+// the standard off the midpoint: a quarter of the way from the far focus, the near end is 0.75 Δ away
+check('focus spread off-centre, geometric', O.focusSpread(4, 0.1, 0.25).geometric, 0.75 * 4 / 0.1);
+check('focus spread off-centre, near and far defocus', O.focusSpread(4, 0.1, 0.25).defocusNear(20) / O.focusSpread(4, 0.1, 0.25).defocusFar(20), 3);
+check('focus spread off-centre equals a centred spread of 2·0.75·Δ', O.focusSpread(4, 0.1, 0.25).hansma, O.focusSpread(6, 0.1).hansma);
+check('focus spread, halfway is the default', O.focusSpread(4, 0.1, 0.5).geometric, O.focusSpread(4, 0.1).geometric);
+// room for the standard: 2 mm, c = 0.1: at f/27 the film may be 27·sqrt(0.01 − (27/750)²) from each image
+check('focus spread, room at f/27', O.focusSpread(2, 0.1).room(27), (2 * 27 * Math.sqrt(0.01 - (27 / 750) ** 2) - 2) / 2);
+check('focus spread, roomiest f-number 750 c / √2', O.focusSpread(2, 0.1).roomiest, 75 / Math.SQRT2);
+check('focus spread, widest window 750 c² − Δ', 2 * O.focusSpread(2, 0.1).room(O.focusSpread(2, 0.1).roomiest), 750 * 0.01 - 2);
+check('focus spread, no room when stopped down past c·750', O.focusSpread(2, 0.1).room(80), -Infinity);
+const fsq = O.focusSpread(2, 0.1, 0.5), Nedge = fsq.range[0];
+check('focus spread, no room at the widest acceptable aperture', fsq.room(Nedge), 0, 1e-9);
 check('tilt for hinge at 1.2 m with 150 mm', O.tiltForHinge(150, 1200) * 180 / Math.PI, Math.asin(0.125) * 180 / Math.PI);
 check('hinge distance round trip', O.hingeDistance(150, O.tiltForHinge(150, 1200)), 1200);
 

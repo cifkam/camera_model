@@ -13,6 +13,8 @@
   const IMAGE_CIRCLE = { '8x10"': 420, '5x7"': 300, '4x5"': 220, '6x9 roll': 125, '6x7 roll': 100, '6x6 roll': 90,
                          '6x4.5 roll': 80, '35 mm': 45, 'APS-C': 30, 'phone 1/1.56"': 11 };
   const APERTURES = [1, 1.4, 2, 2.8, 4, 5.6, 8, 11, 16, 22, 32, 45, 64, 90];
+  // with the half stops between, as lenses and meters mark them (rounded the usual way: 6.7, 9.5, 13, 19, 27 …)
+  const APERTURES_HALF = [1, 1.2, 1.4, 1.7, 2, 2.4, 2.8, 3.3, 4, 4.8, 5.6, 6.7, 8, 9.5, 11, 13, 16, 19, 22, 27, 32, 38, 45, 54, 64, 76, 90];
 
   const diagonal = fmt => Math.hypot(...FORMATS[fmt]);
 
@@ -48,10 +50,33 @@
   // angle of view (rad) of a gate edge of length `size` at image distance v
   const angleOfView = (size, v) => 2 * Math.atan(size / (2 * v));
 
-  // Focus spread (view cameras): rail travel `delta` between near and far focus. Set the standard
-  // halfway; the aperture that covers it geometrically is delta / (2c). Hansma's rule balances
-  // defocus against diffraction: N = sqrt(375 * delta) with delta in mm.
-  const focusSpread = (delta, c) => ({ geometric: delta / (2 * c), hansma: Math.sqrt(375 * delta) });
+  // Focus spread (view cameras): rail travel `delta` (mm) between focusing on the nearest and on the farthest
+  // point to be sharp. With the standard halfway, the defocus blur at both limits is delta / (2N), so the
+  // aperture that covers the spread geometrically is N = delta / (2c). Diffraction adds an Airy disc of
+  // 2.44 λ N ≈ N / 750 mm (λ ≈ 550 nm); the two are combined as a root sum of squares, and the blur at the
+  // limits is smallest where they are equal: N = sqrt(375 delta), Hansma's optimum, giving N / 530 (Q.-T. Luong,
+  // "How to select the f-stop", largeformatphotography.info/fstop.html, after P. Hansma, Photo Techniques 1996).
+  // `t` places the standard between the two focus positions: 0 at the far one, 1 at the near one, 0.5 halfway.
+  // The film is then t·delta from the far image and (1 − t)·delta from the near one; the blurrier end decides, so
+  // everything above works with the effective spread 2·max(t, 1 − t)·delta (= delta halfway, the best place).
+  // `range`: the f-numbers whose total blur at the blurrier end stays within c, or null when even the optimum
+  // exceeds it: from (w/2N)² + (N/750)² <= c², a quadratic in N².
+  // `room(N)`: how far the standard may sit off the midpoint, each way, with both ends within c at f/N: diffraction
+  // leaves a defocus allowance c' = sqrt(c² − (N/750)²), the film may be up to N·c' from each image, so the window is
+  // 2·N·c' − delta wide (negative: none). It is widest at N = 750 c / √2, where it is 750 c² − delta.
+  const DIFFRACTION_PER_N = 1 / 750;   // Airy disc diameter per f-number, mm
+  function focusSpread(delta, c, t = 0.5) {
+    const k = DIFFRACTION_PER_N, w = 2 * Math.max(t, 1 - t) * delta;
+    const defocusNear = N => (1 - t) * delta / N, defocusFar = N => t * delta / N;
+    const defocus = N => w / (2 * N), diffraction = N => k * N, blur = N => Math.hypot(defocus(N), diffraction(N));
+    const hansma = Math.sqrt(w / (2 * k));   // = sqrt(375 w)
+    const disc = c ** 4 - (w * k) ** 2;
+    const range = disc >= 0 ? [Math.sqrt((c * c - Math.sqrt(disc)) / (2 * k * k)), Math.sqrt((c * c + Math.sqrt(disc)) / (2 * k * k))] : null;
+    const room = N => { const a2 = c * c - (k * N) ** 2; return a2 > 0 ? (2 * N * Math.sqrt(a2) - delta) / 2 : -Infinity; };
+    const roomiest = c / (k * Math.SQRT2);
+    return { geometric: w / (2 * c), hansma, optimumBlur: blur(hansma), range, defocus, defocusNear, defocusFar, diffraction, blur,
+             nearBlur: N => Math.hypot(defocusNear(N), k * N), farBlur: N => Math.hypot(defocusFar(N), k * N), room, roomiest };
+  }
 
   // Formats and equivalence. `ref` is the dimension compared: 'diagonal' (the usual crop factor),
   // 'width' (long edge) or 'height' (short edge), since aspect ratios differ between formats.
@@ -177,8 +202,8 @@
   const tiltForHinge = (f, J) => Math.asin(f / J);
   const hingeDistance = (f, tiltRad) => f / Math.sin(tiltRad);
 
-  const Optics = { FORMATS, IMAGE_CIRCLE, APERTURES, diagonal, cocFromPrint, hyperfocal, dof, extensionFor,
-                   subjectFor, bellows, angleOfView, focusSpread, tiltForHinge, hingeDistance,
+  const Optics = { FORMATS, IMAGE_CIRCLE, APERTURES, APERTURES_HALF, diagonal, cocFromPrint, hyperfocal, dof, extensionFor,
+                   subjectFor, bellows, angleOfView, focusSpread, DIFFRACTION_PER_N, tiltForHinge, hingeDistance,
                    measure, cropFactor, equivalentFocal, equivalentAperture, anglesOfView, sceneCoverage,
                    FILMS, filmByName, reciprocity, DEV_TEMP, devTempFactor, devTime };
   root.Optics = Optics;
