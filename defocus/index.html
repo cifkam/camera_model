@@ -1001,8 +1001,13 @@ const FOCUS_RANGE = [0.1, 500];   // metres
       const vx = (s1[0] - s0[0]) / 1e-3, vy = (s1[1] - s0[1]) / 1e-3, vv = vx * vx + vy * vy;
       const dx = e.clientX - grab.x, dy = e.clientY - grab.y;
       grab.x = e.clientX; grab.y = e.clientY;
-      const turn = (dx * vx + dy * vy) / vv / DEG;
-      if (!(vv >= 1) || !isFinite(turn)) return;   // the edge seen end on: it does not move across the screen
+      // damped where the edge moves mostly towards or away from the viewer and hardly across the screen: there a
+      // pointer move turns it about as far as it would if the edge moved across the screen at a third of its full speed
+      const full = Q.distanceTo(O) * rect.height / (2 * Math.tan(viewer.fov * Math.PI / 360) * Q.distanceTo(viewer.position));
+      // and at most a degree per pixel, so that a standard small on the screen does not spin
+      const lim = Math.hypot(dx, dy);
+      const turn = Math.max(-lim, Math.min(lim, (dx * vx + dy * vy) / (vv + (full / 3) ** 2) / DEG));
+      if (!isFinite(turn)) return;
       moveStandard(() => h.turn(turn));
       return;
     }

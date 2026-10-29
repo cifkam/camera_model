@@ -49,7 +49,7 @@
 </script>
 </head>
 <body>
-<div id="help"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · </span><a href="../" style="color: #9ad8ff; pointer-events: auto">all tools</a></div>
+<div id="help"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · drag the focus point to focus, and with the view camera a standard's dots to tilt (top, bottom) or swing (sides) · </span><a href="../" style="color: #9ad8ff; pointer-events: auto">all tools</a></div>
 <div id="info"><div id="infoTitle">Legend</div><div id="infoBody"></div></div>
 <script type="module">
 import * as THREE from 'three';
@@ -405,6 +405,16 @@ function clearGroup(g) {
   }
 }
 
+// the view camera's turning handles: small dots drawn over everything, rebuilt with the standards in update()
+const turnDotMat = new THREE.PointsMaterial({ color: 0xd0d4da, size: 10, sizeAttenuation: false, transparent: true, alphaTest: 0.5,
+  depthTest: false, map: (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.beginPath(); g.arc(32, 32, 28, 0, 2 * Math.PI); g.fill();
+    return new THREE.CanvasTexture(c);
+  })() });
+let turnHandles = [], turnSpace = null;   // the handles, and the group (camLocal) whose coordinates they are in
+let focusHandle = null;                   // the focus point on the lens axis (world): { p, C: lens centre, dir: lens axis }
+
 const box = (w, h, d, m) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
 function tube(p0, p1, r, m) {
   const dir = p1.clone().sub(p0), len = dir.length();
@@ -598,6 +608,23 @@ function update() {
   const camLocal = new THREE.Group(); camLocal.position.copy(pivot).negate(); cam.add(camLocal);   // built in unpitched coords
   camLocal.add(buildStandard(rearL, iw, ih, bar, depth, 'rear'));
   camLocal.add(buildStandard(frontL, iw, ih, bar, depth, 'front'));
+  // the turning handles (view camera only): dots on each standard's frame, top and bottom to tilt it, left and right
+  // to swing it. Each turns about the standard's pivot (its centre, or its bottom edge with the base pivot, where the
+  // bottom dot would not move and is left out): tilt about the standard's own x, swing about the vertical.
+  turnSpace = camLocal; turnHandles = [];
+  if (P.camera === 'view camera') {
+    for (const [pose, tKey, sKey] of [[rearL, 'rearTilt', 'rearSwing'], [frontL, 'frontTilt', 'frontSwing']]) {
+      const at = (x, y) => new THREE.Vector3(x, y, 0).applyQuaternion(pose.quaternion).add(pose.position);
+      const O = P.tiltPivot === 'base' ? at(0, -fh / 2) : pose.position.clone();
+      const tAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(pose.quaternion), up = new THREE.Vector3(0, 1, 0);
+      for (const sg of [1, -1]) {
+        if (!(P.tiltPivot === 'base' && sg < 0)) turnHandles.push({ name: tKey + sg, key: tKey, p: at(0, sg * fh / 2), O, axis: tAxis });
+        turnHandles.push({ name: sKey + sg, key: sKey, p: at(sg * fw / 2, 0), O, axis: up });
+      }
+    }
+    const dots = new THREE.Points(new THREE.BufferGeometry().setFromPoints(turnHandles.map(h => h.p)), turnDotMat);
+    dots.renderOrder = 30; camLocal.add(dots);
+  }
 
   // --- rail, posts, tripod ----------------------------------------------------
   const railM = mat(0x2b2d33), postM = mat(0x44474f);
@@ -854,9 +881,11 @@ function update() {
   const tExit = rayExitT(Cl, nl, SB.min, SB.max);
   const axisEnd = Cl.clone().addScaledVector(nl, Number.isFinite(tFocus) && tFocus > 0 ? Math.min(tFocus, tExit) : tExit);
   dyn.add(tube(Cl.clone().addScaledVector(nl, -s), axisEnd, 0.004, mat(COL.axis, { opacity: 0.8, basic: true })));
+  focusHandle = null;
   if (Number.isFinite(tFocus) && tFocus > 0) {
     const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 16, 12), mat(COL.axis, { basic: true }));
     dot.position.copy(axisEnd); dyn.add(dot);
+    focusHandle = { p: axisEnd.clone(), C: Cl.clone(), dir: nl.clone() };   // drag it along the axis to focus
   }
   // hyperfocal distance: a point on the lens axis at H from the lens (untilted lens formula, as in the readout)
   const Hf = f * f / (P.fnumber * coc * MM) + f;
@@ -1058,6 +1087,78 @@ gui.onChange(e => {
   update();
 });
 if (matchMedia('(max-width: 700px)').matches) gui.close();   // phones: start with the 3D view, tap the title to open
+
+// ----------------------------------------------------------------------------
+// Dragging the focus point slides it along the lens axis, to the point of the axis nearest the pointer's ray, and
+// focuses there (the rear standard moves along the rail, as with the focus slider).
+// Dragging a standard's dot turns it so that the dot follows the pointer: the angle comes from how fast the dot
+// moves across the screen per radian of turn. Listening on the body in the capture phase runs before OrbitControls,
+// which never sees a drag that starts on a dot.
+{
+  let drag = null;
+  const screenOf = v => { const q = v.clone().project(camera); return [(q.x + 1) / 2 * innerWidth, (1 - q.y) / 2 * innerHeight, q.z]; };
+  const world = p => p.clone().applyMatrix4(turnSpace.matrixWorld);
+  const nearDot = e => {
+    if (!turnSpace) return null;
+    turnSpace.updateWorldMatrix(true, false);
+    let best = null, bd = 14;
+    for (const h of turnHandles) {
+      const [x, y, z] = screenOf(world(h.p)), d = Math.hypot(x - e.clientX, y - e.clientY);
+      if (z < 1 && d < bd) { bd = d; best = h.name; }
+    }
+    if (focusHandle) {
+      const [x, y, z] = screenOf(focusHandle.p), d = Math.hypot(x - e.clientX, y - e.clientY);
+      if (z < 1 && d < bd) best = 'focus';
+    }
+    return best;
+  };
+  const raycaster = new THREE.Raycaster();
+  function dragFocus(e) {
+    if (!focusHandle) return;
+    raycaster.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, 1 - e.clientY / innerHeight * 2), camera);
+    const { C, dir: a } = focusHandle, r = raycaster.ray.direction, w = C.clone().sub(raycaster.ray.origin);
+    const b = a.dot(r), den = 1 - b * b;
+    if (den < 1e-4) return;   // looking along the axis
+    const t = (b * r.dot(w) - a.dot(w)) / den;   // metres along the lens axis from the lens: the focus distance
+    setSeparationForFocus(Math.max(t, P.focal * MM * 1.02));
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    update();
+  }
+  document.body.addEventListener('pointerdown', e => {
+    if (e.target !== renderer.domElement) return;
+    const name = nearDot(e);
+    if (!name) return;
+    e.stopPropagation();
+    drag = { name, x: e.clientX, y: e.clientY };
+    renderer.domElement.setPointerCapture(e.pointerId);
+    renderer.domElement.style.cursor = 'grabbing';
+  }, { capture: true });
+  renderer.domElement.addEventListener('pointermove', e => {
+    if (!drag) { renderer.domElement.style.cursor = !e.buttons && nearDot(e) ? 'grab' : ''; return; }
+    if (drag.name === 'focus') { dragFocus(e); return; }
+    const h = turnHandles.find(t => t.name === drag.name);
+    if (!h) return;
+    turnSpace.updateWorldMatrix(true, false);
+    const O = world(h.O), Q = world(h.p), a = h.axis.clone().transformDirection(turnSpace.matrixWorld);
+    const s0 = screenOf(Q), s1 = screenOf(Q.clone().addScaledVector(a.clone().cross(Q.clone().sub(O)), 1e-3));
+    const vx = (s1[0] - s0[0]) / 1e-3, vy = (s1[1] - s0[1]) / 1e-3, vv = vx * vx + vy * vy;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.x = e.clientX; drag.y = e.clientY;
+    // damped where the dot moves mostly towards or away from the viewer and hardly across the screen: there a pointer
+    // move turns it about as far as it would if the dot moved across the screen at a third of its full speed
+    const full = Q.distanceTo(O) * innerHeight / (2 * Math.tan(camera.fov * Math.PI / 360) * Q.distanceTo(camera.position));
+    // and at most a degree per pixel, so that a standard small on the screen does not spin
+    const lim = Math.hypot(dx, dy);
+    const turn = THREE.MathUtils.clamp((dx * vx + dy * vy) / (vv + (full / 3) ** 2) * 180 / Math.PI, -lim, lim);   // right-handed about the axis: + for all four angles
+    if (!Number.isFinite(turn)) return;
+    P[h.key] = Math.round(THREE.MathUtils.clamp(P[h.key] + turn, -30, 30) * 100) / 100;
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    update();
+  });
+  const end = () => { if (!drag) return; drag = null; renderer.domElement.style.cursor = ''; };
+  renderer.domElement.addEventListener('pointerup', end);
+  renderer.domElement.addEventListener('pointercancel', end);
+}
 
 // ----------------------------------------------------------------------------
 addEventListener('resize', () => {
