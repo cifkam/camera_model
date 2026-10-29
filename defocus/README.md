@@ -16,7 +16,8 @@ sensor, so their circles grow with the distance from the focus and with the aper
   few circles across the cone and three either side of the sensor (fainter past it, where the sensor stops the
   light), and in orange the circle the sensor cuts, the blur circle. Drag the orange dot to move the sensor, or the
   green one to move the plane in focus; either refocuses the lens. Drag the blue dot at the lens to move the camera
-  across the ground (with Shift, up and down), keeping the direction it looks in. Optionally the objects appear
+  across the ground (with Shift, up and down), keeping the direction it looks in. Drag the f-number next to the
+  lens to stop down or open up (right or up for a higher f-number). Optionally the objects appear
   behind the lens too, turned upside down, each point where it comes to focus (at v_z on its chief ray; the thin
   lens keeps straight lines straight): the image space, squeezed into a millimetre or so in depth. The camera's
   inside is millimetres next to a scene in metres, so it is drawn enlarged (×20 by default).
@@ -27,7 +28,9 @@ sensor, so their circles grow with the distance from the focus and with the aper
   millimetre), the standard 50 mm f/1.4, and a 4×5″ view camera with the lens tilted to bring the ground into focus.
 - **View camera**: the "camera" switch turns on a view camera's standards (their controls, below the lens's, stay
   hidden for the normal camera, where the movements count as zero): the lens (front) and the sensor (rear) each
-  rise, fall and shift across, and tilt and swing.
+  rise, fall and shift across, and tilt and swing. Besides the sliders, small dots on the lens board's and the
+  sensor's edges turn them: drag the top or bottom one to tilt, the left or right one to swing. Moving one
+  standard leaves the other in place, each turning about its own centre; the focus distance follows.
 - **Maths**: the thin lens (v from 1/f = 1/s + 1/v, the focal length in pixels fx = v / pixel size, and the focus
   breathing that follows), the depth of field (hyperfocal distance, near and far limits), and the blur of the
   selected vertex worked out step by step.
@@ -47,7 +50,8 @@ sensor, so their circles grow with the distance from the focus and with the aper
   perpendicular from L meets the sensor. Rise and shift of either standard move that point; tilting or swinging
   the back changes the picture (the image plane turns: converging verticals straighten); turning the lens does not,
   as the chief ray through L goes straight on. The focus distance s is along the lens axis, and the sensor slides
-  along the body's rail until it passes through its image, D (square to the sensor) behind L. With lens and sensor
+  along the body's rail until it passes through its image, D (square to the sensor) behind L; a movement of either
+  standard keeps the sensor where it is on the rail and recomputes s instead. With lens and sensor
   no longer parallel focus turns: the plane in focus is the sensor's image through the lens (Scheimpflug) and turns
   about the hinge line, J = f / sin θ from the lens (θ between lens and sensor). The blur is the cone from the
   aperture, square to the lens axis, cut by the sensor at a slant: an ellipse, traced exactly. The near and far

@@ -62,7 +62,7 @@
 <body>
 <div id="app">
   <section id="world">
-    <div id="help3d"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex · drag the dots: orange sensor, green focus, blue lens (camera; Shift: height) · </span><a href="../">all tools</a></div>
+    <div id="help3d"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex · drag the dots (sensor, focus, camera; Shift: height) or the f-number · </span><a href="../">all tools</a></div>
     <div id="gui"></div>
   </section>
   <section id="side">
@@ -275,6 +275,7 @@ function buildCamera() {
     focusForRail: d => { const S = Cam.add(Sc0, [0, 0, -d]); return Lens.focusDistance(f, Cam.dot(Cam.sub(Lb, S), ns) / Cam.dot(aLb, ns)) / 1000; },
     // the rail depth whose sensor passes through a point behind the lens (sensor frame, mm from L)
     railThrough: Pt => rail(Cam.add(Lb, Cam.mulv(Rs, Pt))),
+    swingAxis: toS([0, 1, 0]),                         // both standards swing about the body's vertical
   };
 }
 // The sharp image of a point at camera coordinates Xc (metres, relative to L): on its chief ray, at v_z behind the lens
@@ -567,20 +568,21 @@ function rod(a, b, color, radius = 0.014) {
   m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
   return m;
 }
-// a label whose text changes: one sprite, its canvas redrawn
-function textLabel(color, size = 0.035) {
-  const c = document.createElement('canvas'); c.width = 512; c.height = 64;
+// a label whose text changes: one sprite, its canvas redrawn; `aspect` its width in heights (a short one for a short
+// text, so that a draggable label is no wider than what it says)
+function textLabel(color, size = 0.035, aspect = 8) {
+  const c = document.createElement('canvas'); c.width = 64 * aspect; c.height = 64;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthWrite: false }));
-  sp.scale.set(size * 8, size, 1); sp.renderOrder = 20; sp.userData = { c, color, text: '' };
+  sp.scale.set(size * aspect, size, 1); sp.renderOrder = 20; sp.userData = { c, color, text: '' };
   return sp;
 }
 function setLabel(sp, text) {
   const u = sp.userData;
   if (u.text === text) return;
   u.text = text;
-  const g = u.c.getContext('2d'); g.clearRect(0, 0, 512, 64);
+  const g = u.c.getContext('2d'); g.clearRect(0, 0, u.c.width, 64);
   g.font = 'bold 36px system-ui, sans-serif'; g.fillStyle = u.color;
-  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 256, 34);
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, u.c.width / 2, 34);
   sp.material.map.needsUpdate = true;
 }
 
@@ -588,10 +590,12 @@ function setLabel(sp, text) {
 let dyn = new THREE.Group(); world.add(dyn);
 const camGroup = new THREE.Group(); camGroup.matrixAutoUpdate = false; world.add(camGroup);   // OpenCV camera frame
 let camDyn = new THREE.Group(); camGroup.add(camDyn);
-const lensLabel = textLabel('#9ad8ff', 0.024); camGroup.add(lensLabel);
+const lensLabel = textLabel('#9ad8ff', 0.024, 2.4); camGroup.add(lensLabel);   // drag it to change the f-number
 const sensorLabel = textLabel('#ffd27a', 0.024); camGroup.add(sensorLabel);
 const sensorMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
 const cameraHandleMat = new THREE.PointsMaterial({ color: COL.lens, size: 10, sizeAttenuation: false, map: dotTex,
+  transparent: true, alphaTest: 0.5, depthTest: false });
+const turnHandleMat = new THREE.PointsMaterial({ color: '#d0d4da', size: 8, sizeAttenuation: false, map: dotTex,
   transparent: true, alphaTest: 0.5, depthTest: false });
 const focusHandleMat = new THREE.PointsMaterial({ color: COL.focus, size: 10, sizeAttenuation: false, map: dotTex,
   transparent: true, alphaTest: 0.5, depthTest: false });
@@ -636,6 +640,39 @@ function cone(Xc) {
   };
 }
 const closed = pts => [...pts, pts[0]];
+// the lens board's half width: about half the focal length (a 4×5″ camera's boards are 100–160 mm for 90–300 mm
+// lenses), never tighter than the lens
+// Moving one standard leaves the other where it is, as on a real camera: the sensor keeps its place on the rail, each
+// standard turns about its own centre, and the focus distance follows (rather than the sensor sliding along the rail
+// to hold the focus). `change` sets the movement; a slider has set it already. Should the sensor end up facing no
+// image of the lens axis (no focus distance fits), the focus stays and the sensor goes where that puts it.
+function moveStandard(change = () => {}) {
+  const rail = lens.railDepth;
+  change();
+  buildCamera();
+  const s = lens.focusForRail(rail);
+  if (isFinite(s) && s > 0) P.focus = Math.max(FOCUS_RANGE[0], Math.min(FOCUS_RANGE[1], s));
+  update();
+}
+const boardHalf = () => Math.max(lens.f / 2, 0.65 * lens.A) * inside();
+// The view camera's turning handles (3D view units, the camera frame): at the edges of each standard that move when it
+// turns, so that dragging one turns the standard with that edge following the pointer: top and bottom tilt it
+// (about its own x), left and right swing it (about the body's vertical). `turn` takes the angle in degrees,
+// right-handed about `axis` (a tilt counts the other way round).
+function turnHandles() {
+  if (!isView()) return [];
+  const k = inside(), bh = boardHalf(), lx = column(lens.Rl, 0), ly = column(lens.Rl, 1), sw = lens.swingAxis;
+  const sc = Cam.scale(lens.sensorCentre, k), hw = P.W / 2 * pitch() * k, hh = P.H / 2 * pitch() * k;
+  const clamp = v => Math.round(Math.max(-30, Math.min(30, v)) * 100) / 100;
+  const pair = (name, centre, axis, edge, turn) =>
+    [1, -1].map(sg => ({ name: name + sg, centre, axis, turn, ref: Cam.scale(edge, sg), at: Cam.add(centre, Cam.scale(edge, sg)) }));
+  return [
+    ...pair('front tilt', [0, 0, 0], lx, Cam.scale(ly, bh), d => { P.tilt = clamp(P.tilt - d); }),
+    ...pair('front swing', [0, 0, 0], sw, Cam.scale(lx, bh), d => { P.swing = clamp(P.swing + d); }),
+    ...pair('rear tilt', sc, [1, 0, 0], [0, hh, 0], d => { P.rTilt = clamp(P.rTilt - d); }),
+    ...pair('rear swing', sc, sw, [hw, 0, 0], d => { P.rSwing = clamp(P.rSwing + d); }),
+  ];
+}
 // the object point that a point S behind the lens (camera mm) is the image of: back along the chief ray to depth z
 // along the lens axis, from 1/f = 1/z + 1/q. In camera metres; null when S is no farther than f behind the lens.
 function objectOf(S) {
@@ -750,11 +787,13 @@ function rebuild3D() {
   camDyn.add(polyline(closed(ring), lineMat(COL.lens)));
   // the front standard: a lens board round it, in the lens plane, so its rise, shift, tilt and swing show. About as
   // wide as the focal length (a 4×5″ camera's boards are 100–160 mm for 90–300 mm lenses), never tighter than the lens
-  const half = Math.max(lens.f / 2, 0.65 * lens.A) * k;
+  const half = boardHalf();
   const board = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => Cam.mulv(lens.Rl, [x * half, y * half, 0]));
   camDyn.add(fan(board, fillMat('#8a9099', 0.08)));
   camDyn.add(polyline(closed(board), lineMat('#8a9099')));
-  setLabel(lensLabel, `f/${fmt(lens.N, 3)} · aperture ${fmt(lens.A, 3)} mm`);
+  const turners = turnHandles();
+  if (turners.length) { const t = points(turners.map(h => h.at), turnHandleMat); t.renderOrder = 30; camDyn.add(t); }
+  setLabel(lensLabel, `f/${fmt(lens.N, 3)}`);
   lensLabel.position.set(0, rA + 0.08, 0);   // below the lens
 
   // behind: the sensor D behind L, carrying the (inverted) picture; its corners through L
@@ -796,14 +835,16 @@ function rebuild3D() {
   const sp = selectedPoint();
   const drawCone = (Xc, full) => {
     const cn = cone(Xc);
-    if (!cn) return;
     const Ds = lens.D;
+    if (!cn || !(Ds > 0) || !isFinite(cn.Dz)) return;   // (a sensor at or behind the lens would step the loops below forever)
     // circles step apart on both sides of the sensor: half the defocus, so the sharp image falls on one of them
     // (or a sliver of D when in focus, so they still show the cone narrowing to the sensor and opening past it)
     const step = Math.max(Math.abs(Ds - cn.Dz) / 2, 0.004 * Ds);
     // on past the sensor by 40 % of D (as far as the three coarse circles in front reach back from it), or past the
     // sharp image if that lies further
-    const end = Math.max(1.4 * Ds, cn.Dz + 3.5 * step);
+    // (capped: a point near the lens's focal distance along a turned axis has its image far off behind, and the
+    // circles every tenth of D out to there would run into the hundreds of thousands)
+    const end = Math.min(Math.max(1.4 * Ds, cn.Dz + 3.5 * step), 3 * Ds);
     // generators: from the rim through the sharp image, on to `end`; past the sensor (where the sensor stops the
     // light) fainter and drawn through the sensor, so that side shows too
     const gens = lens.rim.filter((_, j) => j % (full ? RIM / 8 : RIM / 4) === 0);
@@ -909,6 +950,11 @@ const FOCUS_RANGE = [0.1, 500];   // metres
       const d = Math.hypot(x - (e.clientX - rect.left), y - (e.clientY - rect.top));
       if (z < 1 && d < bd) { bd = d; best = name; }
     }
+    for (const h of turnHandles()) {
+      const [x, y, z] = screenOf(new THREE.Vector3(...h.at).applyMatrix4(camGroup.matrixWorld), rect);
+      const d = Math.hypot(x - (e.clientX - rect.left), y - (e.clientY - rect.top));
+      if (z < 1 && d < bd) { bd = d; best = 'turn:' + h.name; }
+    }
     return best;
   };
   const raycaster = new THREE.Raycaster();
@@ -929,8 +975,37 @@ const FOCUS_RANGE = [0.1, 500];   // metres
     const t = n.dot(new THREE.Vector3(P.camX, P.camY, P.camZ).sub(o)) / den;
     return t > 0 ? o.addScaledVector(d, t) : null;
   }
+  // the aperture's label: dragging it scrubs the f-number like a number field, right or up for a higher one, a stop
+  // per 80 px (and well clear of the lens centre's dot, which a drag on the lens itself would take)
+  const onLabel = e => {
+    camGroup.updateMatrixWorld();
+    return pointerRay(e) && raycaster.intersectObject(lensLabel).length > 0;
+  };
   function dragTo(e) {
     if (!dragging) return;   // released before this frame
+    if (dragging.startsWith('turn:')) {
+      // how fast the edge moves on screen per radian of turn, and so how far the pointer's move turns it
+      const h = turnHandles().find(t => 'turn:' + t.name === dragging);
+      if (!h) return;
+      const rect = renderer.domElement.getBoundingClientRect(), M = camGroup.matrixWorld;
+      camGroup.updateMatrixWorld();
+      const O = new THREE.Vector3(...h.centre).applyMatrix4(M), Q = new THREE.Vector3(...Cam.add(h.centre, h.ref)).applyMatrix4(M);
+      const a = new THREE.Vector3(...h.axis).transformDirection(M), dQ = a.clone().cross(Q.clone().sub(O));
+      const s0 = screenOf(Q, rect), s1 = screenOf(Q.clone().addScaledVector(dQ, 1e-3), rect);
+      const vx = (s1[0] - s0[0]) / 1e-3, vy = (s1[1] - s0[1]) / 1e-3, vv = vx * vx + vy * vy;
+      const dx = e.clientX - grab.x, dy = e.clientY - grab.y;
+      grab.x = e.clientX; grab.y = e.clientY;
+      const turn = (dx * vx + dy * vy) / vv / DEG;
+      if (!(vv >= 1) || !isFinite(turn)) return;   // the edge seen end on: it does not move across the screen
+      moveStandard(() => h.turn(turn));
+      return;
+    }
+    if (dragging === 'aperture') {
+      const d = (e.clientX - grab.x) - (e.clientY - grab.y);
+      P.fnum = +Math.max(0.95, Math.min(128, grab.N * 2 ** (d / 160))).toPrecision(2);
+      update();
+      return;
+    }
     if (dragging === 'camera') {
       const hit = onCameraPlane(e);
       if (!hit) return;
@@ -949,15 +1024,15 @@ const FOCUS_RANGE = [0.1, 500];   // metres
     update();
   }
   worldEl.addEventListener('pointerdown', e => {
-    if (e.target !== renderer.domElement || !(dragging = nearHandle(e))) return;
+    if (e.target !== renderer.domElement || !(dragging = nearHandle(e) || (onLabel(e) ? 'aperture' : null))) return;
     controls.enabled = false;
-    grab = null;
+    grab = dragging === 'aperture' || dragging.startsWith('turn:') ? { x: e.clientX, y: e.clientY, N: P.fnum } : null;
     if (dragging === 'camera') dragTo(e);   // where it was taken, so it moves with the pointer without a jump
     renderer.domElement.setPointerCapture(e.pointerId);
     renderer.domElement.style.cursor = 'grabbing';
   }, true);
   renderer.domElement.addEventListener('pointermove', e => {
-    if (!dragging) { renderer.domElement.style.cursor = e.buttons ? '' : nearHandle(e) ? 'grab' : ''; return; }
+    if (!dragging) { renderer.domElement.style.cursor = e.buttons ? '' : nearHandle(e) ? 'grab' : onLabel(e) ? 'ew-resize' : ''; return; }
     if (!pending) requestAnimationFrame(() => { dragTo(pending); pending = null; });
     pending = e;
   });
@@ -1210,16 +1285,16 @@ addMapped(gui, P, 'coc', 0.002, 0.5, 0.001, LOG_MAP).name('circle of confusion (
 
 // the standards: shown only for the view camera, and taken as zero for the normal one
 const fFront = gui.addFolder('View camera: front standard (lens)');
-fFront.add(P, 'rise', -80, 80, 0.1).name('rise / fall (mm)').onChange(update);
-fFront.add(P, 'shift', -80, 80, 0.1).name('shift (mm)').onChange(update);
-addMapped(fFront, P, 'tilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(update);
-addMapped(fFront, P, 'swing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(update);
+fFront.add(P, 'rise', -80, 80, 0.1).name('rise / fall (mm)').onChange(() => moveStandard());
+fFront.add(P, 'shift', -80, 80, 0.1).name('shift (mm)').onChange(() => moveStandard());
+addMapped(fFront, P, 'tilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(() => moveStandard());
+addMapped(fFront, P, 'swing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(() => moveStandard());
 const fRear = gui.addFolder('View camera: rear standard (sensor)');
-fRear.add(P, 'rRise', -80, 80, 0.1).name('rise / fall (mm)').onChange(update);
-fRear.add(P, 'rShift', -80, 80, 0.1).name('shift (mm)').onChange(update);
-addMapped(fRear, P, 'rTilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(update);
-addMapped(fRear, P, 'rSwing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(update);
-fRear.add({ go: () => { Object.assign(P, ZERO); update(); } }, 'go').name('zero all the movements');
+fRear.add(P, 'rRise', -80, 80, 0.1).name('rise / fall (mm)').onChange(() => moveStandard());
+fRear.add(P, 'rShift', -80, 80, 0.1).name('shift (mm)').onChange(() => moveStandard());
+addMapped(fRear, P, 'rTilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(() => moveStandard());
+addMapped(fRear, P, 'rSwing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(() => moveStandard());
+fRear.add({ go: () => moveStandard(() => Object.assign(P, ZERO)) }, 'go').name('zero all the movements');
 function showMode() { fFront.show(isView()); fRear.show(isView()); }
 
 const fEx = gui.addFolder('Camera pose');
