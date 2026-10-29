@@ -20,6 +20,7 @@
   #gui .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
   #gui .lil-gui .controller.boolean .name { width: auto; min-width: 0; flex: 1 1 auto; }
   #gui .lil-gui .controller.boolean .widget { width: auto; flex: 0 0 auto; margin-right: 10px; }
+  #gui .lil-gui .controller.apart { border-top: 1px solid #555; margin-top: 4px; padding-top: 4px; }
   #side { overflow-y: auto; border-left: 1px solid #33363c; padding: 10px 14px 24px; }
   #imageWrap { position: relative; }
   #image { display: block; touch-action: none; margin: 0 auto; }
@@ -107,6 +108,11 @@ const LOG_MAP = {
   fromFrac: (t, lo, hi) => Math.exp(Math.log(lo) + t * (Math.log(hi) - Math.log(lo))),
   toFrac: (v, lo, hi) => (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)),
 };
+// symmetric power track for ranges [-L, L]: fine near zero, where small tilts and swings already matter
+const symPowMap = p => ({
+  fromFrac: (t, lo, hi) => { const u = 2 * t - 1; return Math.sign(u) * hi * Math.abs(u) ** p; },
+  toFrac: (v, lo, hi) => (Math.sign(v) * (Math.abs(v) / hi) ** (1 / p) + 1) / 2,
+});
 // lil-gui moves a slider by one step per pixel of wheel delta, so a single wheel notch (~100 px) can throw it a
 // hundred steps; instead a notch moves it a fixed share of the track (in the mapped track for mapped sliders). The
 // track position is kept unrounded between events, so small trackpad deltas still add up past the step rounding.
@@ -144,7 +150,8 @@ const SHAPES = {
   pyramid: { label: 'pyramid', geom: Cam.pyramid(0.7, 0.8), color: COL.pyramid, movable: true },
   sphere: { label: 'sphere', geom: Cam.sphere(0.4), color: COL.sphere, movable: true },
   cylinder: { label: 'cylinder', geom: Cam.cylinder(0.25, 1.0), color: COL.cylinder, movable: true },
-  axes: { label: 'world axes', geom: Cam.axes(0.6), color: null, edgeColors: [COL.x, COL.y, COL.z] },
+  // the origin light grey, each axis's end in its own colour
+  axes: { label: 'world axes', geom: Cam.axes(0.6), color: null, edgeColors: [COL.x, COL.y, COL.z], vertexColors: ['#c8ccd4', COL.x, COL.y, COL.z] },
   grid: { label: 'ground grid', geom: Cam.groundGrid(12, 1), color: COL.grid, noVertices: true },
 };
 const SCENE_CENTRE = [0, 2.4, 0.15];
@@ -156,8 +163,12 @@ const CAM_POS = [0, -2.5, 1.1];
 const AIM = Cam.lookAt(CAM_POS, SCENE_CENTRE);
 const round1 = x => Math.round(x * 10) / 10;
 const DEFAULTS = {
+  mode: 'normal camera',        // or 'view camera': then the lens (front standard) can rise, shift, tilt and swing
+  rise: 0, shift: 0, tilt: 0, swing: 0,               // front standard (the lens)
+  rRise: 0, rShift: 0, rTilt: 0, rSwing: 0,           // rear standard (the sensor)
   focal: 50, fnum: 1.4, focus: 3.2, sensorW: 36, resolution: '1920×1080', W: 1920, H: 1080,
-  cocAuto: true, coc: 0.029, showDof: true,
+  coc: 0.03,               // the circle of confusion (acceptable blur) on the sensor, mm
+  showDof: true,
   camX: CAM_POS[0], camY: CAM_POS[1], camZ: CAM_POS[2], yaw: round1(AIM.yaw), pitch: round1(AIM.pitch), roll: 0,
   show: { board: true, cube: true, pyramid: true, sphere: true, cylinder: true, axes: true, grid: true },
   objects: {
@@ -169,7 +180,7 @@ const DEFAULTS = {
   },
   edit: 'pyramid',
   selected: { obj: 'pyramid', i: 4 },   // the apex
-  camScale: 20, frustumDepth: 10, allCones: false, imageSpace: true, showCone: true, showDofImage: true,
+  camScale: 20, frustumDepth: 10, allCones: false, imageSpace: true, showCone: true, showDofImage: true, blurOutlines: true,
 };
 const STORE = 'defocus.state';
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -204,28 +215,101 @@ const SENSOR_RES = { 9.8: '1600×1200 (4:3)', 13.2: '1800×1200 (3:2)', 17.3: '1
   36: '1800×1200 (3:2)', 43.8: '1600×1200 (4:3)', 56: '1600×1200 (4:3)', 70: '1500×1200 (5:4)', 120: '1500×1200 (5:4)',
   170: '1680×1200 (7:5)', 245: '1500×1200 (5:4)' };
 const sensorH = () => P.sensorW * P.H / P.W;
-const cocFromSensor = () => Math.hypot(P.sensorW, sensorH()) / 1500;   // the usual "diagonal / 1500"
+// a circle of confusion that suits the format, the usual diagonal / 1500 (0.029 mm on full frame): what picking a
+// format or a preset sets; the slider then changes it freely
+const cocForSensor = () => +(Math.hypot(P.sensorW, sensorH()) / 1500).toPrecision(2);
 
 // ----------------------------------------------------------------------------
-// Derived camera: a thin lens at the camera centre, the sensor at the image distance v that focuses the chosen
-// depth. The pixel scale follows v, not f: refocusing closer moves the sensor back and narrows the view.
+// Derived camera: a thin lens whose centre L is the centre of projection, and the sensor behind it. Focusing moves
+// the sensor, so the pixel scale follows its distance, not f: refocusing closer narrows the view.
+// A view camera moves both standards on the body (the frame P.yaw/pitch/roll and P.camX/Y/Z set, its origin where
+// the lens sits without movements). The front one moves the lens: rise and shift slide it across, tilt and swing
+// turn it; the chief ray through L goes straight on whichever way it is turned, so that changes only where things
+// come to focus (Scheimpflug) and the shape of the blur. The rear one moves the sensor: rise and shift slide it in
+// its plane, tilt and swing turn it, which changes the picture itself (the image plane is another one). Focusing
+// slides the sensor along the body's rail.
+// The camera frame of the projection is the sensor's own (x right, y down, z square to it, out towards the lens),
+// centred on L: the picture is then the pinhole projection K [R | t] from L, the principal point being where the
+// perpendicular from L meets the sensor, and everything behind the lens is worked out in that frame.
 // ----------------------------------------------------------------------------
 let cam, C, lens;
 const pitch = () => P.sensorW / P.W;   // mm per pixel
-function buildCamera() {
-  C = [P.camX, P.camY, P.camZ];
-  const f = P.focal, N = P.fnum;
-  const s = Math.max(P.focus * 1000, 1.02 * f);   // no real image of anything nearer than f
-  const v = Lens.imageDistance(f, s);
-  const fx = v / pitch();
-  const K = Cam.intrinsics({ fx, fy: fx, cx: P.W / 2, cy: P.H / 2 });
-  const R = Cam.rotationFromYawPitchRoll(P.yaw, P.pitch, P.roll);
-  cam = Cam.makeCamera({ K, R, t: Cam.translationFromCentre(R, C), near: Math.max(0.05, 1.05 * f / 1000) });
-  const coc = P.cocAuto ? cocFromSensor() : P.coc;
-  lens = { f, N, A: Lens.aperture(f, N), s, v, coc, dof: Lens.depthOfField(f, N, coc, s) };
+const isView = () => P.mode === 'view camera';
+const ZERO = { rise: 0, shift: 0, tilt: 0, swing: 0, rRise: 0, rShift: 0, rTilt: 0, rSwing: 0 };
+const movements = () => isView() ? Object.fromEntries(Object.keys(ZERO).map(k => [k, P[k]])) : { ...ZERO };
+const DEG = Math.PI / 180;
+// a standard's frame -> the body's: tilt about the body's x (+: its top forward), then swing about its y (+: turned
+// right); for the lens that dips its axis, for the back it leans the sensor
+function standardRotation(tilt, swing) {
+  const ct = Math.cos(tilt * DEG), st = Math.sin(tilt * DEG), cs = Math.cos(swing * DEG), ss = Math.sin(swing * DEG);
+  return Cam.mul([[cs, 0, ss], [0, 1, 0], [-ss, 0, cs]], [[1, 0, 0], [0, ct, st], [0, -st, ct]]);
 }
-// blur circle diameter in pixels of a point at depth z (metres, along the axis)
-const blurPx = z => Lens.blurDiameter(lens.f, lens.N, lens.v, z * 1000) / pitch();
+const column = (M, j) => [M[0][j], M[1][j], M[2][j]];
+const RIM = 24;   // samples round the aperture for the blur shapes
+function buildCamera() {
+  const f = P.focal, N = P.fnum, mv = movements();
+  const s = Math.max(P.focus * 1000, 1.02 * f);   // along the lens axis; no real image of anything nearer than f
+  const v = Lens.imageDistance(f, s);              // its image, along the lens axis behind L
+  // in the body's frame (mm; y down): the lens, and the back, whose centre slides along the rail (−z)
+  const Rl = standardRotation(mv.tilt, mv.swing), Rs = standardRotation(mv.rTilt, mv.rSwing);
+  const Lb = [mv.shift, -mv.rise, 0], aLb = column(Rl, 2), ns = column(Rs, 2), Sc0 = [mv.rShift, -mv.rRise, 0];
+  // the rail depth that puts the sensor through the lens's axial image (that is what the focus distance means)
+  const rail = Q => -Cam.dot(Cam.sub(Q, Sc0), ns) / ns[2];
+  const Dc = rail(Cam.sub(Lb, Cam.scale(aLb, v))), Sc = Cam.add(Sc0, [0, 0, -Dc]);
+  const D = Cam.dot(Cam.sub(Lb, Sc), ns);          // L's distance from the sensor plane
+  const F = Cam.sub(Lb, Cam.scale(ns, D));         // the foot of the perpendicular: the principal point
+  const off = [Cam.dot(Cam.sub(F, Sc), column(Rs, 0)), Cam.dot(Cam.sub(F, Sc), column(Rs, 1))];
+  const K = Cam.intrinsics({ fx: D / pitch(), fy: D / pitch(), cx: P.W / 2 - off[0] / pitch(), cy: P.H / 2 - off[1] / pitch() });
+  const Rb = Cam.rotationFromYawPitchRoll(P.yaw, P.pitch, P.roll), RsT = Cam.transpose(Rs);
+  C = Cam.add([P.camX, P.camY, P.camZ], Cam.scale(Cam.mulv(Cam.transpose(Rb), Lb), 1 / 1000));
+  cam = Cam.makeCamera({ K, R: Cam.mul(RsT, Rb), t: Cam.translationFromCentre(Cam.mul(RsT, Rb), C), near: Math.max(0.05, 1.05 * f / 1000) });
+  // from here on in the sensor's frame
+  const RlS = Cam.mul(RsT, Rl), aL = column(RlS, 2), toS = x => Cam.mulv(RsT, x);
+  const coc = P.coc, A = Lens.aperture(f, N);
+  const rimPts = Array.from({ length: RIM }, (_, j) => { const t = 2 * Math.PI * j / RIM; return Cam.mulv(RlS, [A / 2 * Math.cos(t), A / 2 * Math.sin(t), 0]); });
+  lens = {
+    f, N, A, s, v, D, Rl: RlS, aL, rim: rimPts, coc, dof: Lens.depthOfField(f, N, coc, s),
+    turned: Math.hypot(aL[0], aL[1]) > 1e-9,          // lens and sensor not parallel
+    sensorCentre: toS(Cam.sub(Sc, Lb)), railBase: toS(Cam.sub(Sc0, Lb)), railDir: toS([0, 0, 1]), railDepth: Dc,
+    // the focus distance that puts the sensor, slid along the rail to depth d, through the lens's axial image
+    focusForRail: d => { const S = Cam.add(Sc0, [0, 0, -d]); return Lens.focusDistance(f, Cam.dot(Cam.sub(Lb, S), ns) / Cam.dot(aLb, ns)) / 1000; },
+    // the rail depth whose sensor passes through a point behind the lens (sensor frame, mm from L)
+    railThrough: Pt => rail(Cam.add(Lb, Cam.mulv(Rs, Pt))),
+  };
+}
+// The sharp image of a point at camera coordinates Xc (metres, relative to L): on its chief ray, at v_z behind the lens
+// along the lens axis, where z is the point's depth along that axis. In camera millimetres; null without a real image.
+function sharpImage(Xc) {
+  const X = Cam.scale(Xc, 1000), z = Cam.dot(X, lens.aL), vz = Lens.imageDistance(lens.f, z);
+  return z > 0 && isFinite(vz) ? { z, vz, P: Cam.scale(X, -vz / z) } : null;
+}
+// the cone of light from the aperture rim through that image, cut by the plane d behind L (camera depth, mm)
+const coneSection = (img, d, rim = lens.rim) => rim.map(R => Cam.add(R, Cam.scale(Cam.sub(img.P, R), (-d - R[2]) / (img.P[2] - R[2]))));
+// The blur on the sensor: that section at the sensor, in pixels, with its widest and narrowest width (mm). A circle
+// of diameter A |D − D_z| / D_z while the lens is square to the sensor (worked out directly, the outline only when
+// asked for), an ellipse once it is turned (traced with every rim ray, or with every third for the many samples along
+// the edges, which only need its width).
+function blurOf(Xc, coarse = false) {
+  const img = sharpImage(Xc);
+  if (!img) return null;
+  const K = cam.K, p = pitch(), toPx = q => q.map(([x, y]) => [K[0][2] - x / p, K[1][2] - y / p]);
+  if (!lens.turned) {
+    const Dz = -img.P[2], c = lens.A * Math.abs(lens.D - Dz) / Dz;
+    return { max: c, min: c, px: c / p, img, circle: true, get uv() { return this._uv ||= toPx(coneSection(img, lens.D)); } };
+  }
+  const rim = coarse ? lens.rim.filter((_, j) => j % 3 === 0) : lens.rim, q = coneSection(img, lens.D, rim), h = rim.length / 2;
+  let max = 0, min = Infinity;
+  for (let j = 0; j < h; j++) { const w = Math.hypot(q[j][0] - q[j + h][0], q[j][1] - q[j + h][1]); max = Math.max(max, w); min = Math.min(min, w); }
+  return { uv: toPx(q), max, min, px: max / p, img };
+}
+// how wide a blur shape is across a direction (dx, dy) in the picture, in pixels
+function widthAcross(b, dx, dy) {
+  if (b.circle) return b.px;
+  const n = Math.hypot(dx, dy) || 1, nx = -dy / n, ny = dx / n;
+  let lo = Infinity, hi = -Infinity;
+  for (const [u, v] of b.uv) { const t = u * nx + v * ny; lo = Math.min(lo, t); hi = Math.max(hi, t); }
+  return hi - lo;
+}
 const placed = key => Cam.placeVertices(SHAPES[key].geom.vertices,
   P.objects[key] ? [P.objects[key].x, P.objects[key].y, P.objects[key].z] : [0, 0, 0], P.objects[key] ? P.objects[key].yaw : 0);
 
@@ -249,10 +333,10 @@ function blurredSegment(A, B) {
   const yt = -(K[1][2] + P.H) / K[1][1], yb = (2 * P.H - K[1][2]) / K[1][1];
   for (const n of [[1, 0, -xl], [-1, 0, xr], [0, 1, -yt], [0, -1, yb]]) { c = clipPlane(c[0], c[1], n); if (!c) return null; }
   const [a, b] = c, px = p => Cam.normalisedToPixel([p[0] / p[2], p[1] / p[2]], K);
-  const ua = px(a), ub = px(b), ca = blurPx(a[2]), cb = blurPx(b[2]);
+  const ua = px(a), ub = px(b), ba = blurOf(a, true), bb = blurOf(b, true), ca = ba ? ba.px : 0, cb = bb ? bb.px : 0;
   const n = Math.max(1, Math.min(48, Math.ceil(Math.max(Math.hypot(ub[0] - ua[0], ub[1] - ua[1]) / 60, Math.abs(cb - ca) / 3))));
   const pts = [];
-  for (let i = 0; i <= n; i++) { const p = Cam.add(a, Cam.scale(Cam.sub(b, a), i / n)); pts.push({ uv: px(p), c: blurPx(p[2]) }); }
+  for (let i = 0; i <= n; i++) { const p = Cam.add(a, Cam.scale(Cam.sub(b, a), i / n)); pts.push({ uv: px(p), blur: blurOf(p, true) }); }
   return pts;
 }
 let proj;   // { items: [{ key, edges: [{ color, pts }], faces: [{ shade, outline, c }], points: [{ i, p, c }] }] }
@@ -266,11 +350,11 @@ function projectScene() {
       edges: s.geom.edges.map(([a, b], n) => ({ color: s.edgeColors ? s.edgeColors[n] : s.color, pts: blurredSegment(verts[a], verts[b]) }))
         .filter(e => e.pts),
       faces: (s.geom.faces || []).map(([ids, shade]) => {
-        const zc = ids.reduce((m, i) => m + Cam.projectPoint(verts[i], cam).Xc[2], 0) / ids.length;
-        return { shade, outline: Cam.projectPolygon(ids.map(i => verts[i]), cam), c: zc > cam.near ? blurPx(zc) : 0 };
+        const bs = ids.map(i => blurOf(Cam.projectPoint(verts[i], cam).Xc));
+        return { shade, outline: Cam.projectPolygon(ids.map(i => verts[i]), cam), c: bs.every(b => b) ? bs.reduce((m, b) => m + b.px, 0) / bs.length : 0 };
       }).filter(f => f.outline),
       points: s.noVertices ? [] : verts.map((X, i) => ({ i, p: Cam.projectPoint(X, cam) }))
-        .filter(q => q.p.Xc[2] > cam.near).map(q => ({ ...q, c: blurPx(q.p.Xc[2]) })),
+        .filter(q => q.p.Xc[2] > cam.near).map(q => ({ ...q, blur: blurOf(q.p.Xc) })).filter(q => q.blur),
     });
   }
   proj = { items };
@@ -284,8 +368,9 @@ function selectedPoint() {
 
 // ----------------------------------------------------------------------------
 // Image view (2D canvas). tf maps pixel coordinates to canvas units: X = ox + s u, Y = oy + s v.
-// A blurred line is drawn as wide as its blur circle and correspondingly fainter (its light spread wider); a
-// vertex as a disc of its blur circle: solid when within the acceptable blur, otherwise a ring with a faint fill.
+// A blurred line is drawn as wide as its blur shape reaches across it, and correspondingly fainter (its light spread
+// wider); a vertex as its blur shape (a circle, or an ellipse with a turned lens): solid when within the acceptable
+// blur, otherwise an outline with a faint fill.
 // ----------------------------------------------------------------------------
 const imageCanvas = document.getElementById('image');
 const texCanvas = document.createElement('canvas');
@@ -312,21 +397,28 @@ function drawContent(ctx, tf, lw) {
     for (const e of it.edges) {
       ctx.strokeStyle = e.color;
       for (let k = 0; k + 1 < e.pts.length; k++) {
-        const a = e.pts[k], b = e.pts[k + 1], w = Math.max(lw0, (a.c + b.c) / 2 * tf.s);
+        const a = e.pts[k], b = e.pts[k + 1];
+        if (!a.blur || !b.blur) continue;
+        const du = b.uv[0] - a.uv[0], dv = b.uv[1] - a.uv[1];
+        const w = Math.max(lw0, (widthAcross(a.blur, du, dv) + widthAcross(b.blur, du, dv)) / 2 * tf.s);
         ctx.globalAlpha = base * spread(lw0, w); ctx.lineWidth = w;
         ctx.beginPath(); ctx.moveTo(tf.ox + tf.s * a.uv[0], tf.oy + tf.s * a.uv[1]); ctx.lineTo(tf.ox + tf.s * b.uv[0], tf.oy + tf.s * b.uv[1]); ctx.stroke();
       }
     }
     ctx.globalAlpha = base;
-    const color = SHAPES[it.key].color || '#dddddd';
+    const sh = SHAPES[it.key];
     for (const q of it.points) {
-      const X = tf.ox + tf.s * q.p.uv[0], Y = tf.oy + tf.s * q.p.uv[1], r = q.c * tf.s / 2;
-      if (q.c <= cAcc || r < lw * 1.3) {
+      const color = sh.vertexColors ? sh.vertexColors[q.i] : sh.color || '#dddddd';
+      const X = tf.ox + tf.s * q.p.uv[0], Y = tf.oy + tf.s * q.p.uv[1], r = q.blur.px * tf.s / 2;
+      if (q.blur.px <= cAcc || r < lw * 1.3) {
         ctx.fillStyle = color; ctx.beginPath(); ctx.arc(X, Y, lw * 1.3, 0, 2 * Math.PI); ctx.fill();
       } else {
         ctx.fillStyle = color; ctx.globalAlpha = base * 0.22;
-        ctx.beginPath(); ctx.arc(X, Y, r, 0, 2 * Math.PI); ctx.fill();
-        ctx.strokeStyle = color; ctx.globalAlpha = base * 0.9; ctx.lineWidth = lw * 0.7; ctx.stroke();
+        ctx.beginPath();
+        if (q.blur.circle) ctx.arc(X, Y, r, 0, 2 * Math.PI);
+        else q.blur.uv.forEach(([u, v], k) => (k ? ctx.lineTo : ctx.moveTo).call(ctx, tf.ox + tf.s * u, tf.oy + tf.s * v));
+        ctx.closePath(); ctx.fill();
+        if (P.blurOutlines) { ctx.strokeStyle = color; ctx.globalAlpha = base * 0.9; ctx.lineWidth = lw * 0.7; ctx.stroke(); }
         ctx.globalAlpha = base;
       }
     }
@@ -335,7 +427,7 @@ function drawContent(ctx, tf, lw) {
 function drawSelection(ctx, tf, lw) {
   const sp = selectedPoint();
   if (!sp || sp.Xc[2] <= cam.near) return;
-  const X = tf.ox + tf.s * sp.uv[0], Y = tf.oy + tf.s * sp.uv[1], r = blurPx(sp.Xc[2]) * tf.s / 2;
+  const b = blurOf(sp.Xc), X = tf.ox + tf.s * sp.uv[0], Y = tf.oy + tf.s * sp.uv[1], r = b ? b.px * tf.s / 2 : 0;
   ctx.strokeStyle = COL.selected; ctx.lineWidth = lw * 1.2;
   ctx.beginPath(); ctx.arc(X, Y, Math.max(lw * 5, r + lw * 2.5), 0, 2 * Math.PI); ctx.stroke();
 }
@@ -465,29 +557,15 @@ function fan(pts, mat) {
 const circlePts = (c, r, n = 48) => Array.from({ length: n + 1 }, (_, k) => {
   const a = 2 * Math.PI * k / n; return [c[0] + r * Math.cos(a), c[1] + r * Math.sin(a), c[2]];
 });
-// a solid rod from a to b with an arrowhead: for the world axes, which lie in the plane of the ground grid and
-// would hide among its 1 px lines (WebGL draws no wider lines)
+// a solid rod from a to b, no wider than needed: for the world axes, which lie in the plane of the ground grid and
+// would hide among its 1 px lines (WebGL draws no wider lines). No arrowheads: the picture shows the axes as lines.
 const meshMats = {};
-function arrow(a, b, color, radius = 0.014) {
-  const g = new THREE.Group(), A = new THREE.Vector3(...a), B = new THREE.Vector3(...b);
-  const dir = B.clone().sub(A), len = dir.length(), head = Math.min(0.14, 0.3 * len);
-  const mat = meshMats[color] ||= new THREE.MeshBasicMaterial({ color });
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, len - head, 12), mat);
-  shaft.position.y = (len - head) / 2;
-  const tip = new THREE.Mesh(new THREE.ConeGeometry(radius * 2.6, head, 16), mat);
-  tip.position.y = len - head / 2;
-  g.add(shaft, tip);
-  g.position.copy(A);
-  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
-  return g;
-}
-function label(text, color, size = 0.035) {
-  const c = document.createElement('canvas'); c.width = 128; c.height = 64;
-  const g = c.getContext('2d'); g.font = 'bold 40px system-ui, sans-serif'; g.fillStyle = color;
-  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 64, 34);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthWrite: false }));
-  sp.scale.set(size * 2, size, 1); sp.renderOrder = 20;   // drawn last, but still hidden by whatever is in front
-  return sp;
+function rod(a, b, color, radius = 0.014) {
+  const A = new THREE.Vector3(...a), dir = new THREE.Vector3(...b).sub(A), len = dir.length();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, len, 12), meshMats[color] ||= new THREE.MeshBasicMaterial({ color }));
+  m.position.copy(A).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return m;
 }
 // a label whose text changes: one sprite, its canvas redrawn
 function textLabel(color, size = 0.035) {
@@ -506,13 +584,6 @@ function setLabel(sp, text) {
   sp.material.map.needsUpdate = true;
 }
 
-// static: world axis labels
-const worldLabels = new THREE.Group(); world.add(worldLabels);
-for (const [n, txt] of [[1, 'X'], [2, 'Y'], [3, 'Z']]) {
-  const l = label(txt, SHAPES.axes.edgeColors[n - 1]);
-  l.position.set(...SHAPES.axes.geom.vertices[n].map((a, i) => a * (i === n - 1 ? 1.2 : 1)));
-  worldLabels.add(l);
-}
 // dynamic content, rebuilt on every change
 let dyn = new THREE.Group(); world.add(dyn);
 const camGroup = new THREE.Group(); camGroup.matrixAutoUpdate = false; world.add(camGroup);   // OpenCV camera frame
@@ -550,16 +621,27 @@ camGroup.add(new THREE.Mesh(sensorGeom, sensorMat));
 
 // the camera's inside is millimetres; drawn enlarged so it shows next to a scene in metres
 const inside = () => P.camScale / 1000;   // camera-frame metres per lens millimetre
-// the light cone of a point at camera coordinates Xc (metres): from the aperture rim to its sharp image and on to
-// depth `to` (lens mm) behind the lens. Returns null when the point has no real image.
+// The light cone of a point at camera coordinates Xc (metres): from the aperture rim through its sharp image. In the
+// 3D view's units (camera metres, the inside enlarged); depths d are camera depths behind L in lens millimetres.
+// Returns null when the point has no real image.
 function cone(Xc) {
-  const z = Xc[2] * 1000, vz = Lens.imageDistance(lens.f, z);
-  if (!isFinite(vz)) return null;
-  const k = inside(), tx = Xc[0] / Xc[2], ty = Xc[1] / Xc[2];
-  // the chief ray behind the lens: depth d (mm) -> camera coordinates
-  const onChief = d => [-tx * d * k, -ty * d * k, -d * k];
-  const radius = d => Lens.coneDiameter(lens.f, lens.N, z, d) / 2 * k;
-  return { vz, onChief, radius, apex: onChief(vz) };
+  const img = sharpImage(Xc);
+  if (!img) return null;
+  const k = inside(), X = Cam.scale(Xc, 1000);
+  return {
+    img, Dz: -img.P[2], apex: Cam.scale(img.P, k),
+    onChief: d => Cam.scale(X, -d / X[2] * k),                              // the chief ray, d behind L
+    section: d => coneSection(img, d).map(q => Cam.scale(q, k)),             // the cone cut by the plane d behind L
+    along: (R, d) => Cam.scale(Cam.add(R, Cam.scale(Cam.sub(img.P, R), (-d - R[2]) / (img.P[2] - R[2]))), k),   // rim ray R at d
+  };
+}
+const closed = pts => [...pts, pts[0]];
+// the object point that a point S behind the lens (camera mm) is the image of: back along the chief ray to depth z
+// along the lens axis, from 1/f = 1/z + 1/q. In camera metres; null when S is no farther than f behind the lens.
+function objectOf(S) {
+  const q = -Cam.dot(S, lens.aL);
+  if (q <= lens.f * 1.000001) return null;
+  return Cam.scale(S, -(lens.f / (q - lens.f)) / 1000);
 }
 
 function rebuild3D() {
@@ -574,7 +656,7 @@ function rebuild3D() {
   for (const key of Object.keys(SHAPES)) {
     if (!P.show[key]) continue;
     const s = SHAPES[key], v = placed(key);
-    if (key === 'axes') s.geom.edges.forEach(([a, b], n) => dyn.add(arrow(v[a], v[b], s.edgeColors[n])));
+    if (key === 'axes') s.geom.edges.forEach(([a, b], n) => dyn.add(rod(v[a], v[b], s.edgeColors[n])));
     else dyn.add(segments(s.geom.edges.map(([a, b]) => [v[a], v[b]]), lineMat(s.color)));
     if (!s.noVertices) dyn.add(points(key === 'axes' ? v.slice(0, 1) : v, pointMat(s.color || '#dddddd', 5)));
     if (s.geom.faces) for (const shade of [0, 1]) {
@@ -587,7 +669,6 @@ function rebuild3D() {
       dyn.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: shade ? COL.boardLight : COL.boardDark, side: THREE.DoubleSide })));
     }
   }
-  worldLabels.visible = P.show.axes;
 
   // camera pose: the camera frame's axes in the world are the rows of R (columns of Rᵀ)
   const R = cam.R;
@@ -597,53 +678,96 @@ function rebuild3D() {
                       0, 0, 0, 1);
   camGroup.matrixWorldNeedsUpdate = true;
 
-  // in front: the field of view out to the chosen depth, the plane in focus and the depth-of-field limits
-  const W = P.W, H = P.H, k = inside();
+  // in front: the field of view out to the chosen depth, the plane in focus and the depth-of-field limits. The plane
+  // in focus is the image of the sensor through the lens; the limits are the images of planes parallel to the
+  // sensor where the limits along the axis come to focus. With the lens turned they all lean, and meet in the hinge
+  // line (Merklinger's rule; exact for the plane in focus, the usual approximation for the limits).
+  const W = P.W, H = P.H, k = inside(), aL = lens.aL;
   const corners = [[0, 0], [W, 0], [W, H], [0, H]].map(p => Cam.pixelToNormalised(p, cam.K));
   const at = d => corners.map(([x, y]) => [x * d, y * d, d]);
   const s = lens.s / 1000, dof = lens.dof;
   const D = Math.max(P.frustumDepth, s * 1.2, P.showDof && isFinite(dof.far) ? dof.far / 1000 * 1.1 : 0);
-  camDyn.add(segments(at(D).map(p => [[0, 0, 0], p]), lineMat(COL.frustum, 0.6)));
-  camDyn.add(polyline([[0, 0, -lens.v * k * 1.15], [0, 0, D]], dashMat('#9aa0a8')));
-  camDyn.add(fan(at(s), fillMat(COL.focus, 0.13)));
-  camDyn.add(polyline([...at(s), at(s)[0]], lineMat(COL.focus)));
-  const focusHandle = points([[0, 0, s]], focusHandleMat); focusHandle.renderOrder = 30; camDyn.add(focusHandle);   // drag to focus
-  if (P.showDof) {
-    for (const d of [dof.near, dof.far]) if (isFinite(d) && d > cam.near * 1000) {
-      camDyn.add(fan(at(d / 1000), fillMat(COL.focus, 0.05)));
-      camDyn.add(polyline([...at(d / 1000), at(d / 1000)[0]], lineMat(COL.focus, 0.45)));
+  // a plane behind the lens, d (mm) behind L and parallel to the sensor, mapped out in front (the lens maps planes
+  // to planes: three of its points fix the image) and cut to the field of view out to 3× the depth drawn. A tilted
+  // plane in focus can run off to the horizon, so it is clipped rather than drawn through the sensor's corners.
+  const far = at(3 * D), edges = [0, 1, 2, 3].flatMap(i => [[[0, 0, 0], far[i]], [far[i], far[(i + 1) % 4]]]);
+  function objectPlane(d) {
+    const S0 = Cam.scale(aL, -d / aL[2]);   // where the lens axis meets the plane
+    const X = [S0, Cam.add(S0, [0.2 * d, 0, 0]), Cam.add(S0, [0, 0.2 * d, 0])].map(objectOf);
+    if (X.some(x => !x)) return null;
+    const u = Cam.sub(X[1], X[0]), w = Cam.sub(X[2], X[0]);
+    const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], c = Cam.dot(n, X[0]);
+    const pts = [];
+    for (const [a, b] of edges) {
+      const da = Cam.dot(n, a) - c, db = Cam.dot(n, b) - c;
+      if ((da < 0) !== (db < 0)) pts.push(Cam.add(a, Cam.scale(Cam.sub(b, a), da / (da - db))));
     }
+    if (pts.length < 3) return null;
+    // in order round their centre, for the fan and the outline
+    const m = Cam.scale(pts.reduce(Cam.add), 1 / pts.length), e1 = Cam.sub(pts[0], m);
+    const e2 = [n[1] * e1[2] - n[2] * e1[1], n[2] * e1[0] - n[0] * e1[2], n[0] * e1[1] - n[1] * e1[0]];
+    return pts.sort((p, q) => Math.atan2(Cam.dot(Cam.sub(p, m), e2), Cam.dot(Cam.sub(p, m), e1)) - Math.atan2(Cam.dot(Cam.sub(q, m), e2), Cam.dot(Cam.sub(q, m), e1)));
+  }
+  camDyn.add(segments(at(D).map(p => [[0, 0, 0], p]), lineMat(COL.frustum, 0.6)));
+  camDyn.add(polyline([Cam.scale(aL, -lens.v * k * 1.15), Cam.scale(aL, D)], dashMat('#9aa0a8')));   // the lens axis
+  const focusPlane = objectPlane(lens.D);
+  if (focusPlane) {
+    camDyn.add(fan(focusPlane, fillMat(COL.focus, 0.13)));
+    camDyn.add(polyline(closed(focusPlane), lineMat(COL.focus)));
+  }
+  const focusHandle = points([Cam.scale(aL, s)], focusHandleMat); focusHandle.renderOrder = 30; camDyn.add(focusHandle);   // drag to focus
+  // the image distances of the near and far limits, along the axis; as planes parallel to the sensor, scaled to it
+  const limits = [dof.near, dof.far].map(d => isFinite(d) ? Lens.imageDistance(lens.f, d) : lens.f).filter(isFinite).map(vd => lens.D * vd / lens.v);
+  if (P.showDof) {
+    [dof.near, dof.far].forEach((d, i) => {
+      if (!isFinite(d) || d <= cam.near * 1000) return;
+      const q = objectPlane(lens.D * Lens.imageDistance(lens.f, d) / lens.v);
+      if (!q) return;
+      camDyn.add(fan(q, fillMat(COL.focus, 0.05)));
+      camDyn.add(polyline(closed(q), lineMat(COL.focus, 0.45)));
+    });
   }
   // and behind the lens, where those limits come to focus: everything imaged between these two planes is sharp
   // enough on the sensor between them. The far limit at infinity focuses at f.
-  if (P.showDofImage) {
-    for (const d of [dof.near, dof.far]) {
-      const vd = isFinite(d) ? Lens.imageDistance(lens.f, d) : lens.f;
-      if (!isFinite(vd)) continue;
-      const q = at(-vd * k);
-      camDyn.add(fan(q, fillMat(COL.focus, 0.08)));
-      camDyn.add(polyline([...q, q[0]], lineMat(COL.focus, 0.6)));
-    }
+  if (P.showDofImage) for (const d of limits) {
+    const q = at(-d * k);
+    camDyn.add(fan(q, fillMat(COL.focus, 0.08)));
+    camDyn.add(polyline(closed(q), lineMat(COL.focus, 0.6)));
+  }
+  // the hinge line: where the plane through L parallel to the sensor meets the plane f in front of the lens; the
+  // plane in focus and the depth-of-field limits all turn about it
+  if (lens.turned) {
+    const sa = Math.hypot(aL[0], aL[1]), J = lens.f / sa / 1000, h = [aL[0] / sa * J, aL[1] / sa * J, 0], dir = [-aL[1] / sa, aL[0] / sa, 0];
+    const len = Math.max(2, D);
+    camDyn.add(polyline([Cam.add(h, Cam.scale(dir, -len)), Cam.add(h, Cam.scale(dir, len))], dashMat(COL.focus)));
   }
 
-  // the lens: its aperture A = f/N at the centre
+  // the lens: its aperture A = f/N at the centre, square to its axis
   const rA = lens.A / 2 * k;
   const cHandle = points([[0, 0, 0]], cameraHandleMat); cHandle.renderOrder = 30; camDyn.add(cHandle);   // drag to move the camera
-  camDyn.add(fan(circlePts([0, 0, 0], rA), fillMat(COL.lens, 0.12)));
-  camDyn.add(polyline(circlePts([0, 0, 0], rA), lineMat(COL.lens)));
+  const ring = Array.from({ length: 48 }, (_, j) => { const t = 2 * Math.PI * j / 48; return Cam.scale(Cam.mulv(lens.Rl, [Math.cos(t), Math.sin(t), 0]), rA); });
+  camDyn.add(fan(ring, fillMat(COL.lens, 0.12)));
+  camDyn.add(polyline(closed(ring), lineMat(COL.lens)));
+  // the front standard: a lens board round it, in the lens plane, so its rise, shift, tilt and swing show. About as
+  // wide as the focal length (a 4×5″ camera's boards are 100–160 mm for 90–300 mm lenses), never tighter than the lens
+  const half = Math.max(lens.f / 2, 0.65 * lens.A) * k;
+  const board = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => Cam.mulv(lens.Rl, [x * half, y * half, 0]));
+  camDyn.add(fan(board, fillMat('#8a9099', 0.08)));
+  camDyn.add(polyline(closed(board), lineMat('#8a9099')));
   setLabel(lensLabel, `f/${fmt(lens.N, 3)} · aperture ${fmt(lens.A, 3)} mm`);
   lensLabel.position.set(0, rA + 0.08, 0);   // below the lens
 
-  // behind: the sensor at v, carrying the (inverted) picture; its corners through C
-  const dv = -lens.v * k, sc = at(dv);
+  // behind: the sensor D behind L, carrying the (inverted) picture; its corners through L
+  const dv = -lens.D * k, sc = at(dv);
   const pos = sensorGeom.attributes.position;
   sc.forEach((p, i) => pos.setXYZ(i, ...p));
   pos.needsUpdate = true; sensorGeom.computeBoundingSphere();
-  camDyn.add(polyline([...sc, sc[0]], lineMat('#8a9099')));
+  camDyn.add(polyline(closed(sc), lineMat('#8a9099')));
   camDyn.add(segments(sc.map(p => [[0, 0, 0], p]), lineMat(COL.frustum, 0.6)));
-  const handle = points([[0, 0, dv]], handleMat); handle.renderOrder = 30; camDyn.add(handle);
-  setLabel(sensorLabel, `sensor at v = ${fmt(lens.v, 4)} mm` + (P.camScale !== 1 ? ` (×${fmt(P.camScale)})` : ''));
-  sensorLabel.position.set(0, -Math.abs(sc[0][1]) - 0.08, dv);
+  const sensorCentre = Cam.scale(lens.sensorCentre, k);   // on the rail, wherever the lens has moved
+  const handle = points([sensorCentre], handleMat); handle.renderOrder = 30; camDyn.add(handle);
+  setLabel(sensorLabel, `sensor at ${fmt(lens.D, 4)} mm` + (P.camScale !== 1 ? ` (×${fmt(P.camScale)})` : ''));
+  sensorLabel.position.set(sensorCentre[0], -Math.abs(sc[0][1]) - 0.08, dv);
 
   // the objects behind the lens: every point where it comes to focus, on its chief ray at v_z. The thin lens maps
   // straight lines to straight lines, so the edges stay straight between their images. Only what is at least 3 f in
@@ -651,7 +775,7 @@ function rebuild3D() {
   if (P.imageSpace) {
     const zMin = Math.max(cam.near, 3 * lens.f / 1000);
     const toCam = X => Cam.add(Cam.mulv(cam.R, X), cam.t);
-    const img = Xc => { const vz = Lens.imageDistance(lens.f, Xc[2] * 1000) * k; return [-Xc[0] / Xc[2] * vz, -Xc[1] / Xc[2] * vz, -vz]; };
+    const img = Xc => { const i = sharpImage(Xc); return i ? Cam.scale(i.P, k) : [0, 0, 0]; };
     for (const key of Object.keys(SHAPES)) {
       if (!P.show[key] || key === 'grid') continue;
       const sh = SHAPES[key], Xc = placed(key).map(toCam);
@@ -673,37 +797,36 @@ function rebuild3D() {
   const drawCone = (Xc, full) => {
     const cn = cone(Xc);
     if (!cn) return;
+    const Ds = lens.D;
     // circles step apart on both sides of the sensor: half the defocus, so the sharp image falls on one of them
-    // (or a sliver of v when in focus, so they still show the cone narrowing to the sensor and opening past it)
-    const step = Math.max(Math.abs(lens.v - cn.vz) / 2, 0.004 * lens.v);
-    // on past the sensor by 40 % of v (as far as the three coarse circles in front reach back from it), or past the
+    // (or a sliver of D when in focus, so they still show the cone narrowing to the sensor and opening past it)
+    const step = Math.max(Math.abs(Ds - cn.Dz) / 2, 0.004 * Ds);
+    // on past the sensor by 40 % of D (as far as the three coarse circles in front reach back from it), or past the
     // sharp image if that lies further
-    const end = Math.max(1.4 * lens.v, cn.vz + 3.5 * step);
-    const rim = n => Array.from({ length: n }, (_, j) => { const a = 2 * Math.PI * j / n; return [rA * Math.cos(a), rA * Math.sin(a), 0]; });
+    const end = Math.max(1.4 * Ds, cn.Dz + 3.5 * step);
     // generators: from the rim through the sharp image, on to `end`; past the sensor (where the sensor stops the
     // light) fainter and drawn through the sensor, so that side shows too
-    const along = (r, d) => Cam.add(r, Cam.scale(Cam.sub(cn.apex, r), d / cn.vz));
-    const gens = rim(full ? 8 : 4);
-    camDyn.add(segments(gens.map(r => [r, along(r, lens.v)]), lineMat('#ffffff', full ? 0.35 : 0.18)));
-    camDyn.add(through(segments(gens.map(r => [along(r, lens.v), along(r, end)]), full ? pastSensor : pastSensorFaint)));
+    const gens = lens.rim.filter((_, j) => j % (full ? RIM / 8 : RIM / 4) === 0);
+    camDyn.add(segments(gens.map(R => [Cam.scale(R, k), cn.along(R, Ds)]), lineMat('#ffffff', full ? 0.35 : 0.18)));
+    camDyn.add(through(segments(gens.map(R => [cn.along(R, Ds), cn.along(R, end)]), full ? pastSensor : pastSensorFaint)));
     // the chief ray, through the centre to the sensor and on
-    camDyn.add(segments([[[0, 0, 0], cn.onChief(lens.v)]], lineMat(COL.selected, full ? 0.9 : 0.3)));
-    camDyn.add(through(segments([[cn.onChief(lens.v), cn.onChief(end)]], full ? pastSensor : pastSensorFaint)));
-    // its cross-sections: a few circles along the cone, three either side of the sensor (the part that decides the
-    // blur, and short next to the whole cone), and the one the sensor cuts: the blur circle
+    camDyn.add(segments([[[0, 0, 0], cn.onChief(Ds)]], lineMat(COL.selected, full ? 0.9 : 0.3)));
+    camDyn.add(through(segments([[cn.onChief(Ds), cn.onChief(end)]], full ? pastSensor : pastSensorFaint)));
+    // its cross-sections (planes parallel to the sensor): a few along the cone, three either side of the sensor (the
+    // part that decides the blur, and short next to the whole cone), and the one the sensor cuts: the blur
     if (full) {
-      const ds = [1, 2, 3].map(i => lens.v * i / 4).filter(d => d < lens.v - 4 * step);
-      for (let d = lens.v * 1.1; d <= end + 1e-9; d += lens.v * 0.1) if (d > lens.v + 4 * step) ds.push(d);
-      for (const j of [-3, -2, -1, 1, 2, 3]) ds.push(lens.v + j * step);
-      for (const d of ds) if (d > 0 && cn.radius(d) > 1e-7)
-        camDyn.add(d > lens.v ? through(polyline(circlePts(cn.onChief(d), cn.radius(d)), pastSensor)) : polyline(circlePts(cn.onChief(d), cn.radius(d)), lineMat('#ffffff', 0.5)));
+      const ds = [1, 2, 3].map(i => Ds * i / 4).filter(d => d < Ds - 4 * step);
+      for (let d = Ds * 1.1; d <= end + 1e-9; d += Ds * 0.1) if (d > Ds + 4 * step) ds.push(d);
+      for (const j of [-3, -2, -1, 1, 2, 3]) ds.push(Ds + j * step);
+      for (const d of ds) if (d > 0 && Math.abs(d - cn.Dz) > 1e-6 * Ds)
+        camDyn.add(d > Ds ? through(polyline(closed(cn.section(d)), pastSensor)) : polyline(closed(cn.section(d)), lineMat('#ffffff', 0.5)));
       camDyn.add(points([cn.apex], pointMat(COL.selected, 7, true)));
     }
     // in the plane of the sensor, so drawn over it rather than fighting it for depth
-    const cs = cn.onChief(lens.v), rs = Math.max(cn.radius(lens.v), 1e-6);
-    const disc = fan(circlePts(cs, rs), full ? blurFill : blurFillFaint); disc.renderOrder = 25;
-    const ring = polyline(circlePts(cs, rs), blurLine); ring.renderOrder = 26;
-    camDyn.add(disc, ring);
+    const bs = cn.section(Ds);
+    const disc = fan(bs, full ? blurFill : blurFillFaint); disc.renderOrder = 25;
+    const edge = polyline(closed(bs), blurLine); edge.renderOrder = 26;
+    camDyn.add(disc, edge);
   };
   if (P.allCones && SHAPES[P.selected.obj] && P.show[P.selected.obj]) {
     placed(P.selected.obj).forEach((X, i) => {
@@ -717,6 +840,11 @@ function rebuild3D() {
     if (sp.Xc[2] > cam.near) {
       camDyn.add(segments([[sp.Xc, [0, 0, 0]]], lineMat(COL.selected, 0.9)));
       if (P.showCone) drawCone(sp.Xc, true);
+      else {   // without its cone, still the ray on through the lens to where it meets the sensor
+        const S = Cam.scale(sp.Xc, -lens.D * inside() / sp.Xc[2]);
+        camDyn.add(segments([[[0, 0, 0], S]], lineMat(COL.selected, 0.9)));
+        camDyn.add(points([S], pointMat(COL.selected, 7, true)));
+      }
     }
   }
 }
@@ -732,20 +860,6 @@ function requestRender() {
   if (renderPending) return;
   renderPending = true;
   requestAnimationFrame(() => { renderPending = false; renderer.render(scene, viewer); });
-}
-// move the 3D view to where the selected point's cone meets the sensor, from the side and close enough to see the
-// circles (or to the sensor's centre, with no point selected)
-function viewSensor() {
-  camGroup.updateMatrixWorld();
-  const k = inside(), M = camGroup.matrixWorld, sp = selectedPoint(), cn = sp && sp.Xc[2] > cam.near ? cone(sp.Xc) : null;
-  // centred on the sensor, wide enough for the circles either side of it (as drawn in rebuild3D)
-  const local = cn ? cn.onChief(lens.v) : [0, 0, -lens.v * k];
-  const span = cn ? 7 * Math.max(Math.abs(lens.v - cn.vz) / 2, 0.004 * lens.v) : lens.A;
-  const target = new THREE.Vector3(...local).applyMatrix4(M);
-  const dist = Math.max(0.01, 1.8 * span * k);
-  const off = new THREE.Vector3(1, -0.35, 0.25).transformDirection(M).multiplyScalar(dist);   // mostly from the camera's side
-  controls.target.copy(target); viewer.position.copy(target).add(off);
-  controls.update(); requestRender();
 }
 function viewOverview() {
   const pr = PRESETS[presetSel.preset], pos = pr ? pr.view[0] : VIEW_POS, target = pr ? pr.view[1] : VIEW_TARGET;
@@ -773,22 +887,25 @@ const FOCUS_RANGE = [0.1, 500];   // metres
 {
   let dragging = null, pending = null, grab = null;
   const setFocus = s => { P.focus = +Math.max(FOCUS_RANGE[0], Math.min(FOCUS_RANGE[1], isFinite(s) && s > 0 ? s : FOCUS_RANGE[1])).toPrecision(4); };
-  // where each handle sits on the axis (camera-frame metres, + in front), and what dragging it along the axis to t does
+  // the line each handle slides along (a point and a direction in the camera frame, as drawn), where on it the
+  // handle sits, and what moving it to t does: the sensor along the body's axis, the plane in focus along the lens
+  // axis; the sensor's distance D sets the lens's image distance D / cos, and so the focus
   const HANDLES = {
-    sensor: { at: () => -lens.v * inside(), to: t => setFocus(Lens.focusDistance(lens.f, -t / inside()) / 1000) },
-    focus: { at: () => lens.s / 1000, to: t => setFocus(t) },
-    camera: { at: () => 0 },
+    sensor: { base: () => Cam.scale(lens.railBase, inside()), dir: () => lens.railDir, at: () => -lens.railDepth * inside(),
+      to: t => setFocus(lens.focusForRail(-t / inside())) },
+    focus: { base: () => [0, 0, 0], dir: () => lens.aL, at: () => lens.s / 1000, to: t => setFocus(t) },
+    camera: { base: () => [0, 0, 0], dir: () => [0, 0, 1], at: () => 0 },
   };
-  const axis = () => {
+  const axis = h => {
     camGroup.updateMatrixWorld();
-    return { O: new THREE.Vector3().applyMatrix4(camGroup.matrixWorld), a: new THREE.Vector3(0, 0, 1).transformDirection(camGroup.matrixWorld) };
+    return { O: new THREE.Vector3(...h.base()).applyMatrix4(camGroup.matrixWorld), a: new THREE.Vector3(...h.dir()).transformDirection(camGroup.matrixWorld) };
   };
   const screenOf = (v, rect) => { const q = v.clone().project(viewer); return [(q.x + 1) / 2 * rect.width, (1 - q.y) / 2 * rect.height, q.z]; };
   const nearHandle = e => {
-    const rect = renderer.domElement.getBoundingClientRect(), { O, a } = axis();
+    const rect = renderer.domElement.getBoundingClientRect();
     let best = null, bd = 14;
     for (const [name, h] of Object.entries(HANDLES)) {
-      const [x, y, z] = screenOf(O.clone().addScaledVector(a, h.at()), rect);
+      const { O, a } = axis(h), [x, y, z] = screenOf(O.clone().addScaledVector(a, h.at()), rect);
       const d = Math.hypot(x - (e.clientX - rect.left), y - (e.clientY - rect.top));
       if (z < 1 && d < bd) { bd = d; best = name; }
     }
@@ -825,7 +942,7 @@ const FOCUS_RANGE = [0.1, 500];   // metres
       return;
     }
     // the point of the optical axis closest to the pointer's ray: the handle goes there
-    const ray = pointerRay(e), { O, a } = axis(), r = ray.direction, w = O.clone().sub(ray.origin);
+    const ray = pointerRay(e), { O, a } = axis(HANDLES[dragging]), r = ray.direction, w = O.clone().sub(ray.origin);
     const b = a.dot(r), den = 1 - b * b;
     if (den < 1e-4) return;   // looking along the axis
     HANDLES[dragging].to((b * r.dot(w) - a.dot(w)) / den);
@@ -905,43 +1022,62 @@ function section(id, title, html) {
 }
 // how deep the objects' sharp images reach behind the lens: from the nearest object's to the farthest one's
 function imageSpan() {
-  const zs = [];
+  const zs = [], ds = [];
   for (const key of Object.keys(SHAPES)) {
     if (!P.show[key] || key === 'grid') continue;
-    for (const X of placed(key)) { const z = Cam.add(Cam.mulv(cam.R, X), cam.t)[2] * 1000; if (z >= 3 * lens.f) zs.push(z); }
+    for (const X of placed(key)) {
+      const i = sharpImage(Cam.add(Cam.mulv(cam.R, X), cam.t));
+      if (i && i.z >= 3 * lens.f) { zs.push(i.z); ds.push(-i.P[2]); }
+    }
   }
   if (!zs.length) return '';
-  const near = Math.min(...zs), far = Math.max(...zs), vNear = Lens.imageDistance(lens.f, near), vFar = Lens.imageDistance(lens.f, far);
+  const near = Math.min(...zs), far = Math.max(...zs), dNear = Math.max(...ds), dFar = Math.min(...ds);
   return `<div class="note num">The objects, ${metres(near)} to ${metres(far)} away, come to focus between
-    v = ${fmt(vFar, 5)} and ${fmt(vNear, 5)} mm: their images behind the lens are ${fmt(vNear - vFar, 3)} mm deep
-    (${fmt((far - near) / (vNear - vFar), 3)} × shallower than the scene).</div>`;
+    ${fmt(dFar, 5)} and ${fmt(dNear, 5)} mm behind the lens: their images are ${fmt(dNear - dFar, 3)} mm deep
+    (${fmt((far - near) / (dNear - dFar), 3)} × shallower than the scene).</div>`;
 }
 const fovAt = v => [2 * Math.atan(P.sensorW / 2 / v), 2 * Math.atan(sensorH() / 2 / v)].map(a => a * 180 / Math.PI);
 function updateMath() {
   const el = document.getElementById('math');
   el.querySelectorAll('details').forEach(d => { openState[d.dataset.id] = d.open; });
-  const { f, N, A, s, v, coc, dof } = lens, px = pitch();
-  const fov = fovAt(v), fovInf = fovAt(f);
+  const { f, N, A, s, v, D, coc, dof, aL } = lens, px = pitch(), mv = movements();
+  const fov = fovAt(D), fovInf = fovAt(f);
   let html = '';
 
-  html += section('lens', 'Thin lens', `
+  const vcRows = !isView() ? '' : `
+      <tr><td>front standard (lens): rise ${fmt(mv.rise, 3)} mm, shift ${fmt(mv.shift, 3)} mm, tilt ${fmt(mv.tilt, 3)}°, swing ${fmt(mv.swing, 3)}°;
+        rear standard (sensor): rise ${fmt(mv.rRise, 3)} mm, shift ${fmt(mv.rShift, 3)} mm, tilt ${fmt(mv.rTilt, 3)}°, swing ${fmt(mv.rSwing, 3)}°</td><td></td></tr>
+      <tr><td>the sensor, slid along the rail through that axial image, lies D behind the lens (square to the sensor)</td><td>${fmt(D, 5)} mm</td></tr>
+      <tr><td>principal point: where the perpendicular from the lens meets the sensor</td><td>${vec([cam.K[0][2], cam.K[1][2]], 1)}</td></tr>` +
+    (lens.turned ? `
+      <tr><td>hinge line J = f / sin θ from the lens, θ = ${fmt(Math.asin(Math.hypot(aL[0], aL[1])) / DEG, 3)}° between lens and sensor</td>
+        <td>${metres(f / Math.hypot(aL[0], aL[1]))}</td></tr>` : '');
+  html += section('lens', isView() ? 'Thin lens on a view camera' : 'Thin lens', `
     <table class="steps">
       <tr><td>aperture A = f / N</td><td>${fmt(f)} mm / ${fmt(N, 3)} = ${fmt(A, 4)} mm</td></tr>
-      <tr><td>focused at s</td><td>${metres(s)}</td></tr>
-      <tr><td>sensor at v = f s / (s − f), from 1/f = 1/s + 1/v</td><td>${fmt(v, 5)} mm</td></tr>
-      <tr><td>focal length in pixels f<sub>x</sub> = f<sub>y</sub> = v / pixel size</td><td>${fx1(v / px, 1)} px</td></tr>
+      <tr><td>focused at s${lens.turned ? ' (along the lens axis)' : ''}</td><td>${metres(s)}</td></tr>
+      <tr><td>${isView() ? 'its image' : 'sensor'} at v = f s / (s − f), from 1/f = 1/s + 1/v</td><td>${fmt(v, 5)} mm</td></tr>${vcRows}
+      <tr><td>focal length in pixels f<sub>x</sub> = f<sub>y</sub> = ${isView() ? 'D' : 'v'} / pixel size</td><td>${fx1(D / px, 1)} px</td></tr>
     </table>
     <div class="eq"><i class="v">K</i> = ${matrix(cam.K, x => fx1(x, 1))}</div>
-    <div class="note num">The sensor sits ${fmt(v - f, 3)} mm further back than for focus at infinity, so the picture is
-      ${fmt((v / f - 1) * 100, 2)} % larger (focus breathing): field of view ${fx1(fov[0])}° × ${fx1(fov[1])}°,
-      ${fx1(fovInf[0])}° × ${fx1(fovInf[1])}° at infinity. Pixel size ${fmt(px * 1000, 3)} µm.</div>
+    <div class="note num">${isView()
+      ? `Field of view about ${fx1(fov[0])}° × ${fx1(fov[1])}° (the sensor ${fmt(D, 4)} mm from the lens). Pixel size ${fmt(px * 1000, 3)} µm.`
+      : `The sensor sits ${fmt(D - f, 3)} mm further back than for focus at infinity, so the picture is
+      ${fmt((D / f - 1) * 100, 2)} % larger (focus breathing): field of view ${fx1(fov[0])}° × ${fx1(fov[1])}°,
+      ${fx1(fovInf[0])}° × ${fx1(fovInf[1])}° at infinity. Pixel size ${fmt(px * 1000, 3)} µm.`}</div>
+    ${isView() ? `<div class="note">The chief ray through the lens centre goes straight on however the lens is turned,
+      so the picture is the pinhole projection K [R | t] from the lens centre onto the sensor, R being the sensor's own
+      orientation: turning the back changes the picture (converging lines straighten or converge), turning the lens
+      does not.${lens.turned ? ` With lens and sensor no longer parallel, focus turns: the plane in focus is the image
+      of the sensor and leans (Scheimpflug) about the hinge line, and the cone of light from a point meets the sensor
+      at a slant, so its blur is an ellipse.` : ''}</div>` : ''}
     ${imageSpan()}`);
 
   const blurInf = A * (v - f) / f;
   const vFarLim = isFinite(dof.far) ? Lens.imageDistance(f, dof.far) : f, vNearLim = Lens.imageDistance(f, dof.near);
   html += section('dof', 'Depth of field', `
     <table class="steps">
-      <tr><td>acceptable blur c${P.cocAuto ? ' (sensor diagonal / 1500)' : ''}</td><td>${fmt(coc, 3)} mm = ${fmt(coc / px, 3)} px</td></tr>
+      <tr><td>acceptable blur c (the circle of confusion)</td><td>${fmt(coc, 3)} mm = ${fmt(coc / px, 3)} px</td></tr>
       <tr><td>hyperfocal distance H = f² / (N c) + f</td><td>${metres(dof.H)}</td></tr>
       <tr><td>near limit s (H − f) / (H + s − 2f)</td><td>${metres(dof.near)}</td></tr>
       <tr><td>far limit s (H − f) / (H − s), ∞ once s ≥ H</td><td>${metres(dof.far)}</td></tr>
@@ -950,25 +1086,38 @@ function updateMath() {
       <tr><td>and the near limit at</td><td>${fmt(vNearLim, 5)} mm</td></tr>
       <tr><td>so the sharp zone behind the lens (the sensor at ${fmt(v, 5)} mm) is</td><td>${fmt(vNearLim - vFarLim, 3)} mm deep</td></tr>
       <tr><td>blur of a point at infinity A (v − f) / f</td><td>${fmt(blurInf, 3)} mm = ${fmt(blurInf / px, 3)} px</td></tr>
-    </table>`);
+    </table>
+    ${lens.turned ? `<div class="note">With the lens turned these are along the lens axis. The near and far planes in 3D
+      are the images of planes parallel to the sensor through those limits' images, and like the plane in focus they
+      pass through the hinge line (Merklinger's rule, the usual approximation; the blur drawn in the picture is exact).</div>` : ''}`);
 
   const sp = selectedPoint();
   if (sp) {
     const name = SHAPES[P.selected.obj].label, z = sp.Xc[2] * 1000;
     const rows = [['world point X<sub>w</sub>', vec(sp.Xw, 3)], ['camera frame X<sub>c</sub> = R X<sub>w</sub> + t', vec(sp.Xc, 3)]];
     const notes = [];
-    if (sp.Xc[2] <= cam.near) notes.push(z <= 0 ? 'Behind the camera: it has no image.' : 'Nearer than the focal length: the lens forms no real image of it.');
+    const b = sp.Xc[2] > cam.near ? blurOf(sp.Xc) : null;
+    if (!b) notes.push(z <= 0 ? 'Behind the camera: it has no image.' : 'Nearer than the focal length: the lens forms no real image of it.');
     else {
-      const vz = Lens.imageDistance(f, z), c = Lens.blurDiameter(f, N, v, z);
-      rows.push(['depth z = Z<sub>c</sub>', metres(z)]);
-      rows.push(['sharp image at v<sub>z</sub> = f z / (z − f)', `${fmt(vz, 5)} mm`]);
-      rows.push(['sensor at v', `${fmt(v, 5)} mm`]);
-      rows.push(['defocus v − v<sub>z</sub>', `${fmt(v - vz, 3)} mm`]);
-      rows.push(['blur circle c = A |v − v<sub>z</sub>| / v<sub>z</sub>', `${fmt(c, 3)} mm`]);
-      rows.push(['in pixels c / pixel size', `${fmt(c / px, 3)} px`]);
-      rows.push(['its centre (u, v) = K (x, y, 1), the chief ray', vec(sp.uv, 1)]);
+      const { z: zl, vz } = b.img, Dz = -b.img.P[2], c = b.max;
+      if (!lens.turned) {
+        rows.push(['depth z = Z<sub>c</sub>', metres(zl)]);
+        rows.push(['sharp image at v<sub>z</sub> = f z / (z − f)', `${fmt(vz, 5)} mm`]);
+        rows.push(['sensor at v', `${fmt(D, 5)} mm`]);
+        rows.push(['defocus v − v<sub>z</sub>', `${fmt(D - vz, 3)} mm`]);
+        rows.push(['blur circle c = A |v − v<sub>z</sub>| / v<sub>z</sub>', `${fmt(c, 3)} mm`]);
+      } else {
+        rows.push(['depth z along the lens axis', metres(zl)]);
+        rows.push(['sharp image (on its chief ray) v<sub>z</sub> = f z / (z − f) behind the lens, along its axis', `${fmt(vz, 5)} mm`]);
+        rows.push(['that is D<sub>z</sub> behind the lens centre, square to the sensor', `${fmt(Dz, 5)} mm`]);
+        rows.push(['sensor at D', `${fmt(D, 5)} mm`]);
+        rows.push(['defocus D − D<sub>z</sub>', `${fmt(D - Dz, 3)} mm`]);
+        rows.push(['blur ellipse: the cone cut by the sensor at a slant', `${fmt(c, 3)} × ${fmt(b.min, 3)} mm`]);
+      }
+      rows.push([`in pixels${lens.turned ? ', the long way' : ''}: c / pixel size`, `${fmt(c / px, 3)} px`]);
+      rows.push(['the chief ray meets the sensor at (u, v) = K (x, y, 1)', vec(sp.uv, 1)]);
       notes.push(c < 0.01 * coc ? '<span class="ok">In focus: the sensor sits at its sharp image.</span>'
-        : `The light converges ${v > vz ? 'in front of' : 'behind'} the sensor and ${v > vz ? 'has spread again' : 'has not yet met'} when it reaches it.`);
+        : `The light converges ${D > Dz ? 'in front of' : 'behind'} the sensor and ${D > Dz ? 'has spread again' : 'has not yet met'} when it reaches it.`);
       notes.push(c <= coc ? `<span class="ok">Within the depth of field (c ≤ ${fmt(coc, 3)} mm).</span>`
         : `<span class="warn">Outside the depth of field: ${fmt(c / coc, 3)} × the acceptable blur.</span>`);
       if (sp.uv[0] < 0 || sp.uv[0] > P.W || sp.uv[1] < 0 || sp.uv[1] > P.H) notes.push('<span class="warn">Projects outside the image.</span>');
@@ -982,7 +1131,7 @@ function updateMath() {
 function updateCaption() {
   document.getElementById('caption').innerHTML = [
     `<span class="dot" style="background:#c8ccd4"></span>sharp enough (within the depth of field)`,
-    `<span class="ring"></span>blur circle of a vertex`,
+    `<span class="ring"${P.blurOutlines ? '' : ' style="border-color: transparent; background: rgba(200,204,212,.3)"'}></span>${lens.turned ? 'blur shape (an ellipse with the lens turned)' : 'blur circle'} of a vertex`,
     `lines as wide as their blur`,
   ].join(' · ');
 }
@@ -1006,19 +1155,36 @@ const PRESETS = {
   'standard: full frame, 50 mm f/1.4': {
     sensorW: 36, resolution: '1920×1080', focal: 50, fnum: 1.4, focus: 3.2, cam: CAM_POS, aim: SCENE_CENTRE, camScale: 20,
     view: [VIEW_POS, VIEW_TARGET] },
+  // the view camera's classic: the lens tilted so that the plane in focus lies along the ground, all of it sharp at
+  // a wide aperture. The hinge line has to lie on the ground: J = h / cos(pitch) below the lens, tilt = asin(f / J);
+  // then the focus that brings the ground far off into focus too.
+  'view camera: 4×5″, 150 mm f/1, lens tilted to the ground': {
+    sensorW: 120, resolution: '1500×1200 (5:4)', focal: 150, fnum: 1, focus: 4, cam: [0, -2.5, 1.4], aim: [0, 3, 0.2], camScale: 6,
+    view: [VIEW_POS, VIEW_TARGET], viewCamera: true, groundTilt: true },
 };
 const presetSel = { preset: '' };
 gui.add(presetSel, 'preset', ['', ...Object.keys(PRESETS)]).name('preset').onChange(name => {
   const pr = PRESETS[name];
   if (!pr) return;
-  Object.assign(P, { sensorW: pr.sensorW, resolution: pr.resolution, focal: pr.focal, fnum: pr.fnum, focus: pr.focus, camScale: pr.camScale, cocAuto: true });
+  Object.assign(P, { sensorW: pr.sensorW, resolution: pr.resolution, focal: pr.focal, fnum: pr.fnum, focus: pr.focus, camScale: pr.camScale });
+  P.coc = cocForSensor();
   [P.W, P.H] = RESOLUTIONS[pr.resolution];
-  P.coc = +cocFromSensor().toPrecision(3);
   [P.camX, P.camY, P.camZ] = pr.cam;
   const a = Cam.lookAt(pr.cam, pr.aim);
   P.yaw = round1(a.yaw); P.pitch = round1(a.pitch); P.roll = 0;
-  update(); viewOverview();
+  Object.assign(P, { mode: pr.viewCamera ? 'view camera' : 'normal camera' }, ZERO);
+  if (pr.groundTilt) {
+    const J = pr.cam[2] / Math.cos(P.pitch * DEG);   // metres, along the sensor's "down" to the ground
+    P.tilt = +(Math.asin(pr.focal / 1000 / J) / DEG).toFixed(2);
+    // focus so that a far point on the ground is sharp: its image on the sensor (as "focus on the selected point")
+    buildCamera();
+    const i = sharpImage(Cam.add(Cam.mulv(cam.R, [0, 8, 0]), cam.t));
+    if (i) P.focus = +lens.focusForRail(lens.railThrough(i.P)).toPrecision(4);
+  }
+  showMode(); update(); viewOverview();
 });
+gui.add(P, 'mode', ['normal camera', 'view camera']).name('camera').onChange(() => { showMode(); update(); });
+
 
 const fLens = gui.addFolder('Lens');
 addMapped(fLens, P, 'focal', 4, 1200, 0.1, LOG_MAP).name('focal length f (mm)').onChange(update);
@@ -1026,24 +1192,35 @@ addMapped(fLens, P, 'fnum', 0.95, 128, 0.05, LOG_MAP).name('f-number N').onChang
 addMapped(fLens, P, 'focus', ...FOCUS_RANGE, 0.01, LOG_MAP).name('focus distance s (m)').onChange(update);
 fLens.add({ go: () => {
   const sp = selectedPoint();
-  if (sp && sp.Xc[2] > cam.near) { P.focus = sp.Xc[2]; update(); }
+  const i = sp && sp.Xc[2] > cam.near ? sharpImage(sp.Xc) : null;
+  // the sensor slid along the rail through its sharp image
+  if (i) { P.focus = lens.focusForRail(lens.railThrough(i.P)); update(); }
 } }, 'go').name('focus on the selected point');
 fLens.add({ go: () => { P.focus = +(Lens.hyperfocal(lens.f, lens.N, lens.coc) / 1000).toPrecision(4); update(); } }, 'go')
   .name('focus at the hyperfocal distance');
 fLens.add(P, 'sensorW', SENSORS).name('sensor').onChange(w => {
   if (SENSOR_RES[w]) { P.resolution = SENSOR_RES[w]; [P.W, P.H] = RESOLUTIONS[P.resolution]; }
-  if (P.cocAuto) P.coc = +cocFromSensor().toPrecision(3);
+  P.coc = cocForSensor();
   update();
 });
-addMapped(fLens, P, 'sensorW', 2, 300, 0.1, LOG_MAP).name('sensor width (mm)').onChange(() => { if (P.cocAuto) P.coc = +cocFromSensor().toPrecision(3); update(); });
-fLens.add(P, 'resolution', Object.keys(RESOLUTIONS)).name('resolution').onChange(v => { [P.W, P.H] = RESOLUTIONS[v]; if (P.cocAuto) P.coc = +cocFromSensor().toPrecision(3); update(); });
+addMapped(fLens, P, 'sensorW', 2, 300, 0.1, LOG_MAP).name('sensor width (mm)').onChange(update);
+fLens.add(P, 'resolution', Object.keys(RESOLUTIONS)).name('resolution').onChange(v => { [P.W, P.H] = RESOLUTIONS[v]; update(); });
 
-const fDof = gui.addFolder('Depth of field');
-fDof.add(P, 'cocAuto').name('acceptable blur = sensor diagonal / 1500').onChange(v => {
-  if (v) P.coc = +cocFromSensor().toPrecision(3);
-  update();
-});
-addMapped(fDof, P, 'coc', 0.002, 0.5, 0.001, LOG_MAP).name('acceptable blur c (mm)').onChange(() => { P.cocAuto = false; update(); });
+addMapped(gui, P, 'coc', 0.002, 0.5, 0.001, LOG_MAP).name('circle of confusion (mm)').onChange(update);
+
+// the standards: shown only for the view camera, and taken as zero for the normal one
+const fFront = gui.addFolder('View camera: front standard (lens)');
+fFront.add(P, 'rise', -80, 80, 0.1).name('rise / fall (mm)').onChange(update);
+fFront.add(P, 'shift', -80, 80, 0.1).name('shift (mm)').onChange(update);
+addMapped(fFront, P, 'tilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(update);
+addMapped(fFront, P, 'swing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(update);
+const fRear = gui.addFolder('View camera: rear standard (sensor)');
+fRear.add(P, 'rRise', -80, 80, 0.1).name('rise / fall (mm)').onChange(update);
+fRear.add(P, 'rShift', -80, 80, 0.1).name('shift (mm)').onChange(update);
+addMapped(fRear, P, 'rTilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(update);
+addMapped(fRear, P, 'rSwing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(update);
+fRear.add({ go: () => { Object.assign(P, ZERO); update(); } }, 'go').name('zero all the movements');
+function showMode() { fFront.show(isView()); fRear.show(isView()); }
 
 const fEx = gui.addFolder('Camera pose');
 fEx.add(P, 'camX', -15, 15, 0.05).name('camera X (m)').onChange(update);
@@ -1069,7 +1246,7 @@ fScene.add(objProxy, 'y', -8, 12, 0.05).name('object Y (m)').onChange(update);
 fScene.add(objProxy, 'z', -1, 4, 0.05).name('object Z (m)').onChange(update);
 fScene.add(objProxy, 'yaw', -180, 180, 1).name('object turn (°)').onChange(update);
 
-const fView = gui.addFolder('3D view');
+const fView = gui.addFolder('View');
 addMapped(fView, P, 'camScale', 1, 200, 1, LOG_MAP).name('camera enlarged ×').onChange(update);
 fView.add(P, 'frustumDepth', 1, 30, 0.5).name('field of view to (m)').onChange(update);
 fView.add(P, 'showDof').name('near and far DoF planes, in front of the lens').onChange(update);
@@ -1077,14 +1254,14 @@ fView.add(P, 'showDofImage').name('near and far DoF planes, behind the lens').on
 fView.add(P, 'showCone').name('light cone of the selected vertex').onChange(update);
 fView.add(P, 'allCones').name('cones from every vertex of the object').onChange(update);
 fView.add(P, 'imageSpace').name('objects behind the lens, where they are sharp').onChange(update);
-fView.add({ go: viewSensor }, 'go').name('look at the sensor up close');
-fView.add({ go: viewOverview }, 'go').name('back to the overview');
+// the one setting for the picture rather than the 3D view, set apart by a line
+fView.add(P, 'blurOutlines').name('picture: outline the blur shapes of the vertices').onChange(update).domElement.classList.add('apart');
 
 gui.add({ reset: () => {
   const keep = clone(DEFAULTS);
   for (const k of Object.keys(keep)) P[k] = keep[k];   // P.show copies into the object the checkboxes hold
   presetSel.preset = '';
-  update(); viewOverview();
+  showMode(); update(); viewOverview();
 } }, 'reset').name('reset everything');
 // P.show must stay the object the checkboxes are bound to
 {
@@ -1092,7 +1269,8 @@ gui.add({ reset: () => {
   Object.defineProperty(P, 'show', { get: () => showObj, set: v => Object.assign(showObj, v), enumerable: true });
 }
 gui.controllersRecursive().filter(c => c._hasSlider).forEach(tameWheel);
-fDof.close(); fEx.close(); fScene.close(); fView.close();
+fEx.close(); fScene.close(); fView.close();
+showMode();
 if (matchMedia('(max-width: 760px)').matches) gui.close();
 
 // ----------------------------------------------------------------------------
