@@ -568,12 +568,14 @@ function rod(a, b, color, radius = 0.014) {
   m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
   return m;
 }
+const textLabels = [];
 // a label whose text changes: one sprite, its canvas redrawn; `aspect` its width in heights (a short one for a short
 // text, so that a draggable label is no wider than what it says)
 function textLabel(color, size = 0.035, aspect = 8) {
   const c = document.createElement('canvas'); c.width = 64 * aspect; c.height = 64;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthWrite: false }));
-  sp.scale.set(size * aspect, size, 1); sp.renderOrder = 20; sp.userData = { c, color, text: '' };
+  sp.scale.set(size * aspect, size, 1); sp.renderOrder = 20; sp.userData = { c, color, text: '', size, aspect };
+  textLabels.push(sp);
   return sp;
 }
 function setLabel(sp, text) {
@@ -894,6 +896,10 @@ function resize3D() {
   const w = worldEl.clientWidth, h = worldEl.clientHeight;
   renderer.setSize(w, h);
   viewer.aspect = w / h; viewer.updateProjectionMatrix();
+  // the labels' size is a share of the view's height: in a short view (a phone's, above the picture) they keep the
+  // pixel size they have in a desktop's, about 820 px tall, rather than shrinking with it
+  const grow = Math.max(1, 820 / h);
+  for (const l of textLabels) l.scale.set(l.userData.size * l.userData.aspect * grow, l.userData.size * grow, 1);
   requestRender();
 }
 let renderPending = false;
