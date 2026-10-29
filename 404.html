@@ -16,7 +16,7 @@
   // /2d or /3d (or /Calculators) would fail: map the first segment after the site root onto the
   // real directory names, ignoring case, and go there.
   (function () {
-    var dirs = ['3d', '2d', 'calculators'];
+    var dirs = ['3d', '2d', 'calculators', 'projection'];
     var parts = location.pathname.split('/').filter(Boolean);
     var root = parts.length && parts[0].toLowerCase() === 'photo_tools' ? 1 : 0;   // project site prefix
     var seg = parts[root] || '';
@@ -33,9 +33,7 @@
 <body>
 <main>
   <h1>Page not found</h1>
-  <p>Nothing lives at this address. The tools are listed on the <a href="/photo_tools/">start page</a>:
-     the <a href="/photo_tools/3d/">3D camera model</a>, the <a href="/photo_tools/2d/">2D side view</a> and the
-     <a href="/photo_tools/calculators/">calculators &amp; tables</a>.</p>
+  <p>Nothing lives at this address. All the tools are on the <a href="/photo_tools/">start page</a>.</p>
 </main>
 </body>
 </html>

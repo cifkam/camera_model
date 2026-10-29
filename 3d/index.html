@@ -28,9 +28,9 @@
   #info.closed { padding: 6px 12px; }
   @media (max-width: 700px) {
     #info { left: 8px; right: 8px; bottom: 8px; max-width: none; font-size: 11px; line-height: 1.45; padding: 8px 26px 8px 10px; }
-    #help { display: none; }
+    #help .hint { display: none; }
   }
-  @media (pointer: coarse) { #help { display: none; } }
+  @media (pointer: coarse) { #help .hint { display: none; } }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
   .warn { color: #ffb347; }
   #help { position: absolute; left: 12px; top: 12px; color: #aaa; font-size: 12px; pointer-events: none; }
@@ -49,7 +49,7 @@
 </script>
 </head>
 <body>
-<div id="help">drag: orbit · right-drag: pan · wheel: zoom · <a href="../" style="color: #9ad8ff; pointer-events: auto">all tools</a></div>
+<div id="help"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · </span><a href="../" style="color: #9ad8ff; pointer-events: auto">all tools</a></div>
 <div id="info"><div id="infoTitle">Legend</div><div id="infoBody"></div></div>
 <script type="module">
 import * as THREE from 'three';

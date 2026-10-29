@@ -12,6 +12,8 @@
   header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   header h1 { font-size: 16px; margin: 0; }
   header a { color: var(--muted); margin-left: auto; }
+  /* once the tabs no longer fit beside the title, they go to a row of their own and the link stays up by the title */
+  @media (max-width: 960px) { header a { order: 1; } header nav { order: 2; flex-basis: 100%; } }
   nav { display: flex; gap: 6px; flex-wrap: wrap; }
   nav button { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; font: inherit; }
   nav button.active { background: var(--accent); color: #000; border-color: var(--accent); }
@@ -103,7 +105,7 @@
 <header>
   <h1>Photo tools</h1>
   <nav id="nav"></nav>
-  <a href="../3d/">3D camera model</a> <a href="../" style="margin-left: 12px">all tools</a>
+  <a href="../">all tools</a>
 </header>
 <main>
   <aside id="shared"></aside>

@@ -13,6 +13,7 @@
   #world { position: relative; min-width: 0; overflow: hidden; }
   #world > canvas { display: block; touch-action: none; }
   #help3d { position: absolute; left: 10px; top: 8px; color: #9aa0a8; font-size: 12px; pointer-events: none; }
+  #help3d a { color: #9ad8ff; pointer-events: auto; }
   #gui { position: absolute; right: 8px; top: 8px; max-height: calc(100% - 16px); overflow-y: auto; }
   #gui .lil-gui.root { border: 1px solid #666; --width: 270px; }
   /* checkbox rows: checkbox first, label after, so long labels never push the box around */
@@ -46,9 +47,9 @@
     #app { display: block; height: auto; }
     #world { height: 55vh; height: 55svh; }
     #side { border-left: 0; border-top: 1px solid #33363c; padding: 8px 10px 24px; overflow: visible; }
-    #help3d { display: none; }
+    #help3d .hint { display: none; }
   }
-  @media (pointer: coarse) { #help3d { display: none; } }
+  @media (pointer: coarse) { #help3d .hint { display: none; } }
 </style>
 <script type="importmap">
 { "imports": {
@@ -60,7 +61,7 @@
 <body>
 <div id="app">
   <section id="world">
-    <div id="help3d">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex to follow it · drag the orange dot to move the image plane</div>
+    <div id="help3d"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex to follow it · drag the orange dot to move the image plane · </span><a href="../">all tools</a></div>
     <div id="gui"></div>
   </section>
   <section id="side">
