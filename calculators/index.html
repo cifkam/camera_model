@@ -1524,11 +1524,15 @@ function selectTool(id) {
 function toolFromHash() { return decodeURIComponent(location.hash.slice(1)).toLowerCase(); }
 window.addEventListener('hashchange', () => selectTool(toolFromHash()));   // a hash link followed on the page itself
 function renderTool() {
+  // rebuilding replaces the controls: give the focus back to the one that had it (as renderShared does for the
+  // panel), so a dropdown that triggered the rebuild can still be stepped with the arrow keys
+  const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.key : null;
   const root = document.getElementById('tool');
   root.replaceChildren();
   renderShared();   // the side panel depends on the tool (its own inputs, whether the CoC card is shown)
   tools[S.tool].render(root);
   update();
+  if (focused) { const el = root.querySelector(`[data-key="${focused}"]`); if (el) el.focus({ preventScroll: true }); }
 }
 function update() {
   const ci = cocInfo();
