@@ -27,6 +27,7 @@ jobs:
           cp 3d/index.html site/3d/
           cp 2d/index.html site/2d/
           mkdir -p site/calculators && cp calculators/index.html calculators/optics.js site/calculators/
+          mkdir -p site/projection && cp projection/index.html projection/camera.js site/projection/
           cp 404.html favicon.ico site/
           # uppercase aliases: /2D and /3D are plain redirect pages to the real (lowercase) directories
           for d in 2d 3d; do

@@ -1,0 +1,1009 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinhole camera model</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M3 16 L17 7 L17 25 Z' fill='none' stroke='%234fa8ff' stroke-width='2.5' stroke-linejoin='round'/%3E%3Crect x='19' y='9' width='10' height='14' rx='1.5' fill='%234fa8ff'/%3E%3C/svg%3E">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #1c1e22; color: #e6e6e6; font: 13px/1.5 system-ui, sans-serif; }
+  body { overflow: hidden; }
+  #app { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 44%); height: 100%; }
+  #world { position: relative; min-width: 0; overflow: hidden; }
+  #world > canvas { display: block; touch-action: none; }
+  #help3d { position: absolute; left: 10px; top: 8px; color: #9aa0a8; font-size: 12px; pointer-events: none; }
+  #gui { position: absolute; right: 8px; top: 8px; max-height: calc(100% - 16px); overflow-y: auto; }
+  #gui .lil-gui.root { border: 1px solid #666; --width: 270px; }
+  /* checkbox rows: checkbox first, label after, so long labels never push the box around */
+  #gui .lil-gui .controller.boolean { flex-direction: row-reverse; justify-content: flex-end; }
+  #gui .lil-gui .controller.boolean .name { width: auto; min-width: 0; flex: 1 1 auto; }
+  #gui .lil-gui .controller.boolean .widget { width: auto; flex: 0 0 auto; margin-right: 10px; }
+  #side { overflow-y: auto; border-left: 1px solid #33363c; padding: 10px 14px 24px; }
+  #imageWrap { position: relative; }
+  #image { display: block; touch-action: none; margin: 0 auto; }
+  .caption { color: #9aa0a8; font-size: 12px; margin: 4px 0 8px; }
+  .sw { display: inline-block; width: 14px; height: 0; border-top: 2px solid; vertical-align: 3px; margin-right: 4px; }
+  .sw.dash { border-top-style: dashed; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+  details { background: #24272c; border: 1px solid #383c43; border-radius: 8px; margin: 0 0 10px; padding: 6px 12px 8px; }
+  summary { cursor: pointer; font-weight: 600; color: #c8ccd4; user-select: none; }
+  details[open] summary { margin-bottom: 6px; }
+  .eq { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 4px 0; }
+  .mat { display: inline-grid; gap: 1px 14px; padding: 2px 8px; border-left: 1.5px solid #9aa0a8; border-right: 1.5px solid #9aa0a8;
+         border-radius: 5px; font-variant-numeric: tabular-nums; text-align: right; font-family: ui-monospace, monospace; font-size: 12px; }
+  .mat .sep { border-left: 1px dashed #666; padding-left: 10px; }
+  .note { color: #9aa0a8; font-size: 12px; margin: 4px 0; }
+  .warn { color: #ffb347; }
+  .num { font-variant-numeric: tabular-nums; }
+  table.steps { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  table.steps td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid #33363c; }
+  table.steps td:first-child { color: #9aa0a8; white-space: nowrap; }
+  table.steps td:last-child { font-family: ui-monospace, monospace; font-size: 12px; text-align: right; white-space: nowrap; }
+  i.v { font-family: Georgia, serif; }
+  @media (max-width: 760px) {
+    body { overflow: auto; }
+    #app { display: block; height: auto; }
+    #world { height: 55vh; height: 55svh; }
+    #side { border-left: 0; border-top: 1px solid #33363c; padding: 8px 10px 24px; overflow: visible; }
+    #help3d { display: none; }
+  }
+  @media (pointer: coarse) { #help3d { display: none; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app">
+  <section id="world">
+    <div id="help3d">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex to follow it · drag the orange dot to move the image plane</div>
+    <div id="gui"></div>
+  </section>
+  <section id="side">
+    <div id="imageWrap"><canvas id="image"></canvas></div>
+    <div class="caption" id="caption"></div>
+    <div id="math"></div>
+  </section>
+</div>
+<script src="camera.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GUI, NumberController } from 'three/addons/libs/lil-gui.module.min.js';
+const Cam = window.Cam;   // camera.js, loaded as a classic script so the page also runs from file://
+
+// lil-gui number controller whose slider track follows a non-linear mapping; the number field stays in real
+// units. lil-gui maps the pointer to a linear value in [min, max] and passes it to _snapClampSetValue (after
+// _setDraggingStyle(true)); that linear value is reinterpreted through { fromFrac(t, min, max), toFrac(v, min, max) }.
+class MappedNumberController extends NumberController {
+  constructor(parent, object, property, min, max, step, map) {
+    super(parent, object, property, min, max, step);
+    this._map = map;
+    this.updateDisplay();
+  }
+  _setDraggingStyle(active, type) {
+    this._sliderDrag = active && type !== 'vertical';
+    return super._setDraggingStyle(active, type);
+  }
+  _snapClampSetValue(v) {
+    if (this._sliderDrag && this._map) v = this._map.fromFrac((v - this._min) / (this._max - this._min), this._min, this._max);
+    return super._snapClampSetValue(v);
+  }
+  updateDisplay() {
+    super.updateDisplay();
+    if (this._hasSlider && this._map)
+      this.$fill.style.width = 100 * Math.max(0, Math.min(1, this._map.toFrac(this.getValue(), this._min, this._max))) + '%';
+    return this;
+  }
+}
+// logarithmic track: equal track lengths are equal ratios
+const LOG_MAP = {
+  fromFrac: (t, lo, hi) => Math.exp(Math.log(lo) + t * (Math.log(hi) - Math.log(lo))),
+  toFrac: (v, lo, hi) => (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)),
+};
+// signed logarithmic track for [min < 0, max > 0]: equal ratios on either side of the point where it jumps
+// from −1 to +1
+const SIGNED_LOG_MAP = {
+  fromFrac: (t, lo, hi) => {
+    const a = Math.log(-lo), s = t * (a + Math.log(hi)) - a;
+    return s < 0 ? -Math.exp(-s) : Math.exp(s);
+  },
+  toFrac: (v, lo, hi) => {
+    const a = Math.log(-lo), l = Math.log(Math.max(1, Math.abs(v)));
+    return ((v < 0 ? -l : l) + a) / (a + Math.log(hi));
+  },
+};
+// symmetric power track for ranges [-L, L]: fine near zero (distortion coefficients)
+const symPowMap = p => ({
+  fromFrac: (t, lo, hi) => { const u = 2 * t - 1; return Math.sign(u) * hi * Math.abs(u) ** p; },
+  toFrac: (v, lo, hi) => (Math.sign(v) * (Math.abs(v) / hi) ** (1 / p) + 1) / 2,
+});
+// lil-gui moves a slider by one step per pixel of wheel delta, so a single wheel notch (~100 px) can throw it a
+// hundred steps; instead a notch moves it a fixed share of the track (in the mapped track for mapped sliders). The
+// track position is kept unrounded between events, so small trackpad deltas still add up past the step rounding.
+const WHEEL_NOTCH = 0.02;
+const LINEAR_MAP = { fromFrac: (t, lo, hi) => lo + t * (hi - lo), toFrac: (v, lo, hi) => (v - lo) / (hi - lo) };
+function tameWheel(c) {
+  const map = c._map || LINEAR_MAP;
+  let frac = 0, last = null;
+  c.domElement.addEventListener('wheel', e => {
+    const onSlider = c.$slider.contains(e.target), onInput = e.target === c.$input && c._inputFocused;
+    if (!onSlider && !onInput) return;
+    if (onSlider && Math.abs(e.deltaX) < Math.abs(e.deltaY) && c._hasScrollBar) return;   // let the panel scroll
+    e.preventDefault(); e.stopPropagation();
+    if (c.getValue() !== last) frac = map.toFrac(c.getValue(), c._min, c._max);
+    const px = (e.deltaX - e.deltaY) * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+    frac = Math.max(0, Math.min(1, frac + px / 100 * WHEEL_NOTCH));
+    c._snapClampSetValue(map.fromFrac(frac, c._min, c._max));
+    last = c.getValue();
+  }, { capture: true, passive: false });
+}
+const addMapped = (folder, obj, prop, min, max, step, map) => new MappedNumberController(folder, obj, prop, min, max, step, map);
+
+// ----------------------------------------------------------------------------
+// Scene: objects in the world frame (Z up, metres) and their colours, shared by the 3D view and the image
+// ----------------------------------------------------------------------------
+const COL = {
+  board: '#8c939d', boardLight: '#e9e9e9', boardDark: '#2b2d31',
+  cube: '#4fa8ff', pyramid: '#f2d14b', sphere: '#c58cff', cylinder: '#5fd38d',
+  x: '#ff5c5c', y: '#5fd35f', z: '#5c8cff', grid: '#4a4f58', horizon: '#9aa0a8',
+  frustum: '#9ad8ff', planeHandle: '#ffd27a', distortion: '#ff8c42', selected: '#ffffff',
+};
+const SHAPES = {
+  board: { label: 'checkerboard', geom: Cam.checkerboard(7, 5, 0.25), color: COL.board, movable: true },
+  cube: { label: 'cube', geom: Cam.cube(1), color: COL.cube, movable: true },
+  pyramid: { label: 'pyramid', geom: Cam.pyramid(1.2, 1.5), color: COL.pyramid, movable: true },
+  sphere: { label: 'sphere', geom: Cam.sphere(0.6), color: COL.sphere, movable: true },
+  cylinder: { label: 'cylinder', geom: Cam.cylinder(0.4, 1.6), color: COL.cylinder, movable: true },
+  axes: { label: 'world axes', geom: Cam.axes(1), color: null, edgeColors: [COL.x, COL.y, COL.z] },
+  grid: { label: 'ground grid', geom: Cam.groundGrid(10, 1), color: COL.grid, noVertices: true },
+};
+const SCENE_CENTRE = [0, 1.6, 0.6];
+
+// ----------------------------------------------------------------------------
+// Parameters (saved in localStorage)
+// ----------------------------------------------------------------------------
+const CAM_POS = [-3.2, -3.6, 1.6];
+const AIM = Cam.lookAt(CAM_POS, SCENE_CENTRE);
+const round1 = x => Math.round(x * 10) / 10;
+const DEFAULTS = {
+  entry: 'focal length',        // 'focal length' (f and sensor width) or 'pixels' (fx and fy directly)
+  focal: 24, sensorW: 36, aspect: 1, fxPx: 1280, fyPx: 1280,
+  resolution: '1920×1080', W: 1920, H: 1080, cx: 960, cy: 540, skew: 0,
+  camX: CAM_POS[0], camY: CAM_POS[1], camZ: CAM_POS[2], yaw: round1(AIM.yaw), pitch: round1(AIM.pitch), roll: 0,
+  distPreset: 'none', k1: 0, k2: 0, k3: 0, p1: 0, p2: 0,
+  showIdeal: true, distGrid: false, trueFrustum: true,
+  show: { board: true, cube: true, pyramid: true, sphere: true, cylinder: true, axes: true, grid: true, horizon: true },
+  objects: {
+    board: { x: -1.6, y: 0.6, z: 0, yaw: 20 },
+    cube: { x: 0.9, y: 0.8, z: 0, yaw: 25 },
+    pyramid: { x: -0.4, y: 3.2, z: 0, yaw: 0 },
+    sphere: { x: 2.6, y: 3.4, z: 0, yaw: 0 },
+    cylinder: { x: -2.9, y: 3.0, z: 0, yaw: 0 },
+  },
+  edit: 'pyramid',
+  selected: { obj: 'pyramid', i: 4 },   // the apex
+  camScale: 40, frustumDepth: 9, allRays: false,
+};
+const SCALE_RANGE = [-100, 1000];   // the camera's enlargement in the 3D view; negative puts the plane behind C
+const STORE = 'projection.state';
+const clone = o => JSON.parse(JSON.stringify(o));
+function loadState() {
+  const P = clone(DEFAULTS);
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORE) || '{}');
+    for (const k of Object.keys(P)) if (k in saved) {
+      if (P[k] && typeof P[k] === 'object') {
+        for (const j of Object.keys(P[k])) if (saved[k] && j in saved[k])
+          P[k][j] = typeof P[k][j] === 'object' ? { ...P[k][j], ...saved[k][j] } : saved[k][j];
+      } else P[k] = saved[k];
+    }
+  } catch (e) { /* storage blocked or garbled: start from the defaults */ }
+  return P;
+}
+const P = loadState();
+const saveState = () => { try { localStorage.setItem(STORE, JSON.stringify(P)); } catch (e) { /* ignore */ } };
+
+const RESOLUTIONS = { '640×480': [640, 480], '1280×720': [1280, 720], '1920×1080': [1920, 1080], '4000×3000': [4000, 3000], custom: null };
+const SENSORS = { 'full frame (36 mm)': 36, 'APS-C (23.5 mm)': 23.5, '1″ (13.2 mm)': 13.2, 'phone 1/1.3″ (9.8 mm)': 9.8 };
+const DIST_PRESETS = {
+  none: { k1: 0, k2: 0, k3: 0, p1: 0, p2: 0 },
+  barrel: { k1: -0.25, k2: 0.05, k3: 0, p1: 0, p2: 0 },
+  'strong barrel': { k1: -0.4, k2: 0.15, k3: -0.02, p1: 0, p2: 0 },
+  pincushion: { k1: 0.2, k2: 0, k3: 0, p1: 0, p2: 0 },
+  moustache: { k1: -0.3, k2: 0.25, k3: 0, p1: 0, p2: 0 },
+  tangential: { k1: 0, k2: 0, k3: 0, p1: 0.02, p2: -0.015 },
+  custom: null,
+};
+
+// ----------------------------------------------------------------------------
+// Derived camera
+// ----------------------------------------------------------------------------
+// f is the geometric mean √(fx·fy) in pixels: the pixel aspect a = fy/fx stretches the pixels by √a one way and
+// squeezes them the other, so their area stays (sensor width / W)² and the focal length in mm stays put
+const fxNow = () => P.entry === 'pixels' ? P.fxPx : Cam.fxFromFocal(P.focal, P.sensorW, P.W) / Math.sqrt(P.aspect);
+const fyNow = () => P.entry === 'pixels' ? P.fyPx : Cam.fxFromFocal(P.focal, P.sensorW, P.W) * Math.sqrt(P.aspect);
+// the focal length in mm, also when entered in pixels: the sensor width fixes the (mean) pixel size
+const focalMm = () => Math.sqrt(fxNow() * fyNow()) * P.sensorW / P.W;
+const distNow = () => ({ k1: P.k1, k2: P.k2, k3: P.k3, p1: P.p1, p2: P.p2 });
+let cam, C;
+function buildCamera() {
+  C = [P.camX, P.camY, P.camZ];
+  const K = Cam.intrinsics({ fx: fxNow(), fy: fyNow(), cx: P.cx, cy: P.cy, skew: P.skew });
+  const R = Cam.rotationFromYawPitchRoll(P.yaw, P.pitch, P.roll);
+  cam = Cam.makeCamera({ K, R, t: Cam.translationFromCentre(R, C), dist: distNow(), view: [P.W, P.H] });
+}
+const placed = key => Cam.placeVertices(SHAPES[key].geom.vertices,
+  P.objects[key] ? [P.objects[key].x, P.objects[key].y, P.objects[key].z] : [0, 0, 0], P.objects[key] ? P.objects[key].yaw : 0);
+
+// ----------------------------------------------------------------------------
+// Projection of the scene into pixels (shared by the image view and the texture on the 3D image plane)
+// ----------------------------------------------------------------------------
+let proj;   // { items: [{ key, color, lines, ideal, faces, points }], horizon, horizonIdeal, distGrid }
+function projectScene() {
+  const distOn = Cam.hasDistortion(cam.dist);
+  const items = [];
+  for (const key of Object.keys(SHAPES)) {
+    if (!P.show[key]) continue;
+    const s = SHAPES[key], verts = placed(key);
+    const edgeLines = (useDist) => s.geom.edges.map(([a, b], n) => ({
+      color: s.edgeColors ? s.edgeColors[n] : s.color, lines: Cam.projectSegment(verts[a], verts[b], cam, useDist) }));
+    items.push({
+      key,
+      edges: edgeLines(true),
+      ideal: distOn ? edgeLines(false) : null,
+      faces: (s.geom.faces || []).map(([ids, shade]) => ({ shade, outline: Cam.projectPolygon(ids.map(i => verts[i]), cam) }))
+        .filter(f => f.outline),
+      points: s.noVertices ? [] : verts.map((X, i) => ({ i, p: Cam.projectPoint(X, cam) })).filter(q => q.p.Xc[2] > cam.near && q.p.inModel),
+    });
+  }
+  let horizon = null, horizonIdeal = null;
+  if (P.show.horizon) {
+    const dirs = [];
+    for (let i = 0; i <= 720; i++) { const a = 2 * Math.PI * i / 720; dirs.push([Math.cos(a), Math.sin(a), 0]); }
+    horizon = Cam.projectDirections(dirs, cam, true);
+    horizonIdeal = distOn ? Cam.projectDirections(dirs, cam, false) : null;
+  }
+  // the ideal pixel grid as the distorted lens draws it: where a straight pixel grid of a pinhole camera ends up
+  let distGrid = null;
+  if (P.distGrid && distOn) {
+    distGrid = [];
+    const line = (from, to) => {
+      const pts = [];
+      for (let i = 0; i <= 60; i++) {
+        const u = from[0] + (to[0] - from[0]) * i / 60, v = from[1] + (to[1] - from[1]) * i / 60;
+        const n = Cam.pixelToNormalised([u, v], cam.K);
+        pts.push(Math.hypot(n[0], n[1]) <= cam.rMax ? Cam.normalisedToPixel(Cam.distort(n, cam.dist), cam.K) : null);
+      }
+      let cur = null;
+      for (const p of pts) { if (p) { if (!cur) distGrid.push(cur = []); cur.push(p); } else cur = null; }
+    };
+    const W = P.W, H = P.H, mx = 0.15 * W, my = 0.15 * H;
+    for (let i = -1; i <= 11; i++) line([W * i / 10, -my], [W * i / 10, H + my]);
+    for (let j = -1; j <= 11; j++) line([-mx, H * j / 10], [W + mx, H * j / 10]);
+  }
+  proj = { items, horizon, horizonIdeal, distGrid };
+}
+function selectedPoint() {
+  const { obj, i } = P.selected;
+  if (!SHAPES[obj] || !P.show[obj] || SHAPES[obj].noVertices) return null;
+  const verts = placed(obj);
+  return i < verts.length ? Cam.projectPoint(verts[i], cam) : null;
+}
+
+// ----------------------------------------------------------------------------
+// Image view (2D canvas). tf maps pixel coordinates to canvas units: X = ox + s u, Y = oy + s v.
+// ----------------------------------------------------------------------------
+const imageCanvas = document.getElementById('image');
+const texCanvas = document.createElement('canvas');
+let imgTf = null;
+const MARGIN = 0.1;   // drawn margin around the sensor, as a fraction of the image width
+function strokeLines(ctx, tf, lines) {
+  ctx.beginPath();
+  for (const l of lines) {
+    ctx.moveTo(tf.ox + tf.s * l[0][0], tf.oy + tf.s * l[0][1]);
+    for (let k = 1; k < l.length; k++) ctx.lineTo(tf.ox + tf.s * l[k][0], tf.oy + tf.s * l[k][1]);
+  }
+  ctx.stroke();
+}
+function drawContent(ctx, tf, lw) {
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  if (proj.distGrid) { ctx.strokeStyle = '#5a6070'; ctx.lineWidth = lw * 0.6; ctx.setLineDash([]); strokeLines(ctx, tf, proj.distGrid); }
+  const order = ['grid', 'board', 'axes', 'cylinder', 'pyramid', 'cube', 'sphere'];
+  const items = [...proj.items].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+  for (const it of items) {
+    for (const f of it.faces) {
+      ctx.fillStyle = f.shade ? 'rgba(233,233,233,.85)' : 'rgba(20,21,24,.85)';
+      ctx.beginPath();
+      f.outline.forEach(([u, v], k) => (k ? ctx.lineTo : ctx.moveTo).call(ctx, tf.ox + tf.s * u, tf.oy + tf.s * v));
+      ctx.closePath(); ctx.fill();
+    }
+    if (P.showIdeal && it.ideal && it.key !== 'grid') {
+      ctx.setLineDash([4 * lw, 4 * lw]); ctx.lineWidth = lw * 0.7; ctx.globalAlpha *= 0.55;
+      for (const e of it.ideal) { ctx.strokeStyle = e.color; strokeLines(ctx, tf, e.lines); }
+      ctx.globalAlpha /= 0.55; ctx.setLineDash([]);
+    }
+    ctx.lineWidth = it.key === 'grid' ? lw * 0.7 : it.key === 'axes' ? lw * 1.8 : lw;
+    for (const e of it.edges) { ctx.strokeStyle = e.color; strokeLines(ctx, tf, e.lines); }
+    const color = SHAPES[it.key].color || '#dddddd';
+    ctx.fillStyle = color;
+    for (const q of it.points) {
+      ctx.beginPath(); ctx.arc(tf.ox + tf.s * q.p.uv[0], tf.oy + tf.s * q.p.uv[1], lw * 1.3, 0, 2 * Math.PI); ctx.fill();
+    }
+  }
+  if (proj.horizon) {
+    ctx.strokeStyle = COL.horizon; ctx.lineWidth = lw * 0.8; ctx.setLineDash([6 * lw, 4 * lw]);
+    strokeLines(ctx, tf, proj.horizon); ctx.setLineDash([]);
+  }
+}
+function drawSelection(ctx, tf, lw) {
+  const sp = selectedPoint();
+  if (!sp || sp.Xc[2] <= cam.near || !sp.inModel) return;
+  const X = tf.ox + tf.s * sp.uv[0], Y = tf.oy + tf.s * sp.uv[1];
+  if (Cam.hasDistortion(cam.dist)) {
+    const Xi = tf.ox + tf.s * sp.ideal[0], Yi = tf.oy + tf.s * sp.ideal[1];
+    ctx.strokeStyle = COL.distortion; ctx.fillStyle = COL.distortion; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.moveTo(Xi, Yi); ctx.lineTo(X, Y); ctx.stroke();
+    ctx.beginPath(); ctx.arc(Xi, Yi, lw * 2, 0, 2 * Math.PI); ctx.fill();
+  }
+  ctx.strokeStyle = COL.selected; ctx.lineWidth = lw * 1.2;
+  ctx.beginPath(); ctx.arc(X, Y, lw * 5, 0, 2 * Math.PI); ctx.stroke();
+}
+function drawPrincipalPoint(ctx, tf, lw) {
+  const X = tf.ox + tf.s * P.cx, Y = tf.oy + tf.s * P.cy, r = 7 * lw;
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = lw;
+  ctx.beginPath(); ctx.moveTo(X - r, Y); ctx.lineTo(X + r, Y); ctx.moveTo(X, Y - r); ctx.lineTo(X, Y + r); ctx.stroke();
+}
+const niceStep = (span, px) => [10, 20, 50, 100, 200, 250, 500, 1000, 2000, 5000].find(s => s * px >= 48) || 10000;
+
+function drawImageView() {
+  const wrap = document.getElementById('imageWrap');
+  const W = P.W, H = P.H, m = MARGIN * W;
+  const phone = matchMedia('(max-width: 760px)').matches;
+  const availW = wrap.clientWidth, availH = (phone ? 0.42 : 0.6) * innerHeight;
+  const s = Math.min(availW / (W + 2 * m), availH / (H + 2 * m));
+  const cw = Math.floor(s * (W + 2 * m)), ch = Math.floor(s * (H + 2 * m)), dpr = devicePixelRatio || 1;
+  if (imageCanvas.width !== Math.round(cw * dpr) || imageCanvas.height !== Math.round(ch * dpr)) {
+    imageCanvas.width = Math.round(cw * dpr); imageCanvas.height = Math.round(ch * dpr);
+    imageCanvas.style.width = cw + 'px'; imageCanvas.style.height = ch + 'px';
+  }
+  const ctx = imageCanvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  imgTf = { s, ox: s * m, oy: s * m };
+  const tf = imgTf, x0 = tf.ox, y0 = tf.oy, x1 = tf.ox + s * W, y1 = tf.oy + s * H;
+  ctx.fillStyle = '#16181b'; ctx.fillRect(0, 0, cw, ch);
+  ctx.fillStyle = '#25282e'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  // what falls outside the image, faintly; then the image itself
+  ctx.globalAlpha = 0.3; drawContent(ctx, tf, 1.5); ctx.globalAlpha = 1;
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
+  ctx.fillStyle = '#25282e'; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+  drawContent(ctx, tf, 1.5);
+  ctx.restore();
+  ctx.strokeStyle = '#8a9099'; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
+  // pixel axes: u along the top edge, v down the left edge
+  ctx.fillStyle = '#9aa0a8'; ctx.strokeStyle = '#8a9099'; ctx.font = '10px system-ui, sans-serif';
+  const step = niceStep(W, s);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  for (let u = 0; u <= W + 1e-9; u += step) {
+    const X = x0 + s * u;
+    ctx.beginPath(); ctx.moveTo(X, y0); ctx.lineTo(X, y0 - 4); ctx.stroke();
+    if (X > x0 + 10 || u === 0) ctx.fillText(u, X, y0 - 5);
+  }
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let v = step; v <= H + 1e-9; v += step) {
+    const Y = y0 + s * v;
+    ctx.beginPath(); ctx.moveTo(x0, Y); ctx.lineTo(x0 - 4, Y); ctx.stroke();
+    ctx.fillText(v, x0 - 6, Y);
+  }
+  ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.fillText('u →', x1 + 4, y0 - 5);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText('v ↓', x0 - 14, y1 + 4);
+  // image centre (faint) and the principal point (draggable)
+  ctx.strokeStyle = 'rgba(255,255,255,.35)';
+  ctx.beginPath(); ctx.arc(x0 + s * W / 2, y0 + s * H / 2, 4, 0, 2 * Math.PI); ctx.stroke();
+  drawPrincipalPoint(ctx, tf, 1.3);
+  ctx.fillStyle = '#ffffff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText('(cx, cy)', x0 + s * P.cx + 6, y0 + s * P.cy + 4);
+  drawSelection(ctx, tf, 1.5);
+}
+
+// the picture as the texture on the 3D image plane: only the sensor area
+let texture = null;
+function drawTexture() {
+  const Tw = 1024, Th = Math.max(16, Math.round(Tw * P.H / P.W));
+  if (texCanvas.width !== Tw || texCanvas.height !== Th || !texture) {
+    texCanvas.width = Tw; texCanvas.height = Th;
+    if (texture) texture.dispose();
+    texture = new THREE.CanvasTexture(texCanvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
+    planeMat.map = texture; planeMat.needsUpdate = true;
+  }
+  const ctx = texCanvas.getContext('2d'), tf = { s: Tw / P.W, ox: 0, oy: 0 }, lw = 2.2;
+  ctx.fillStyle = '#25282e'; ctx.fillRect(0, 0, Tw, Th);
+  drawContent(ctx, tf, lw);
+  drawPrincipalPoint(ctx, tf, lw);
+  drawSelection(ctx, tf, lw);
+  ctx.strokeStyle = '#8a9099'; ctx.lineWidth = 4; ctx.strokeRect(2, 2, Tw - 4, Th - 4);
+  texture.needsUpdate = true;
+}
+
+// ----------------------------------------------------------------------------
+// 3D view
+// ----------------------------------------------------------------------------
+const worldEl = document.getElementById('world');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+worldEl.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#1c1e22');
+const viewer = new THREE.PerspectiveCamera(45, 1, 0.05, 400);
+// Z-up world inside a Y-up three.js scene: (x, y, z) -> (x, z, -y)
+const world = new THREE.Group(); world.rotation.x = -Math.PI / 2; scene.add(world);
+const toThree = ([x, y, z]) => new THREE.Vector3(x, z, -y);
+viewer.position.copy(toThree([-11.5, -8.5, 6]));
+const controls = new OrbitControls(viewer, renderer.domElement);
+controls.target.copy(toThree([-1.4, -0.6, 0.8]));
+controls.enableDamping = false;
+controls.addEventListener('change', () => requestRender());
+
+// round points for vertices
+const dotTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.beginPath(); g.arc(32, 32, 28, 0, 2 * Math.PI); g.fill();
+  return new THREE.CanvasTexture(c);
+})();
+const lineMats = {}, pointMats = {};
+const lineMat = (color, opacity = 1) => lineMats[color + opacity] ||= new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity });
+const dashMat = (color) => lineMats['dash' + color] ||= new THREE.LineDashedMaterial({ color, dashSize: 0.12, gapSize: 0.08 });
+const pointMat = (color, size = 6, onTop = false) => pointMats[color + size + onTop] ||= new THREE.PointsMaterial({
+  color, size, sizeAttenuation: false, map: dotTex, alphaTest: 0.5, depthTest: !onTop });
+function segments(pairs, mat) {
+  const g = new THREE.BufferGeometry().setFromPoints(pairs.flat().map(p => new THREE.Vector3(...p)));
+  const l = new THREE.LineSegments(g, mat);
+  if (mat.isLineDashedMaterial) l.computeLineDistances();
+  return l;
+}
+const polyline = (pts, mat) => {
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(...p))), mat);
+  if (mat.isLineDashedMaterial) l.computeLineDistances();
+  return l;
+};
+const points = (pts, mat) => new THREE.Points(new THREE.BufferGeometry().setFromPoints(pts.map(p => new THREE.Vector3(...p))), mat);
+// a solid rod from a to b with an arrowhead: for the world axes, which lie in the plane of the ground grid and
+// would hide among its 1 px lines (WebGL draws no wider lines)
+const meshMats = {};
+function arrow(a, b, color, radius = 0.018) {
+  const g = new THREE.Group(), A = new THREE.Vector3(...a), B = new THREE.Vector3(...b);
+  const dir = B.clone().sub(A), len = dir.length(), head = Math.min(0.18, 0.3 * len);
+  const mat = meshMats[color] ||= new THREE.MeshBasicMaterial({ color });
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, len - head, 12), mat);
+  shaft.position.y = (len - head) / 2;
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(radius * 2.6, head, 16), mat);
+  tip.position.y = len - head / 2;
+  g.add(shaft, tip);
+  g.position.copy(A);
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return g;
+}
+function label(text, color, size = 0.035) {
+  const c = document.createElement('canvas'); c.width = 128; c.height = 64;
+  const g = c.getContext('2d'); g.font = 'bold 40px system-ui, sans-serif'; g.fillStyle = color;
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 64, 34);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthWrite: false }));
+  sp.scale.set(size * 2, size, 1); sp.renderOrder = 20;   // drawn last, but still hidden by whatever is in front
+  return sp;
+}
+
+// a label whose text changes: one sprite, its canvas redrawn
+function textLabel(color, size = 0.035) {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 64;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), sizeAttenuation: false, depthWrite: false }));
+  sp.scale.set(size * 8, size, 1); sp.renderOrder = 20; sp.userData = { c, color, text: '' };
+  return sp;
+}
+function setLabel(sp, text) {
+  const u = sp.userData;
+  if (u.text === text) return;
+  u.text = text;
+  const g = u.c.getContext('2d'); g.clearRect(0, 0, 512, 64);
+  g.font = 'bold 36px system-ui, sans-serif'; g.fillStyle = u.color;
+  g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 256, 34);
+  sp.material.map.needsUpdate = true;
+}
+
+// static: world axis labels
+const worldLabels = new THREE.Group(); world.add(worldLabels);
+for (const [n, txt] of [[1, 'X'], [2, 'Y'], [3, 'Z']]) {
+  const l = label(txt, SHAPES.axes.edgeColors[n - 1]);
+  l.position.set(...SHAPES.axes.geom.vertices[n].map((a, i) => a * (i === n - 1 ? 1.15 : 1)));
+  worldLabels.add(l);
+}
+// dynamic content, rebuilt on every change
+let dyn = new THREE.Group(); world.add(dyn);
+const camGroup = new THREE.Group(); camGroup.matrixAutoUpdate = false; world.add(camGroup);   // OpenCV camera frame
+let camDyn = new THREE.Group(); camGroup.add(camDyn);
+camGroup.add(points([[0, 0, 0]], pointMat('#ffffff', 7)));
+const fLabel = textLabel('#d0d4da', 0.026); camGroup.add(fLabel);
+const camLabelC = label('C', '#ffffff'); camLabelC.position.set(-0.1, -0.2, 0); camGroup.add(camLabelC);
+for (const [axis, col, txt] of [[[0.7, 0, 0], COL.x, 'x'], [[0, 0.7, 0], COL.y, 'y'], [[0, 0, 0.7], COL.z, 'z']]) {
+  camGroup.add(segments([[[0, 0, 0], axis]], lineMat(col)));
+  const l = label(txt, col); l.position.set(...axis.map(a => a * 1.12)); camGroup.add(l);
+}
+const planeMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
+const handleMat = new THREE.PointsMaterial({ color: COL.planeHandle, size: 10, sizeAttenuation: false, map: dotTex,
+  transparent: true, alphaTest: 0.5, depthTest: false });
+const planeGeom = new THREE.BufferGeometry();
+planeGeom.setAttribute('position', new THREE.Float32BufferAttribute(new Array(12).fill(0), 3));
+planeGeom.setAttribute('uv', new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2));
+planeGeom.setIndex([0, 1, 2, 0, 2, 3]);
+const plane = new THREE.Mesh(planeGeom, planeMat); camGroup.add(plane);
+
+function rebuild3D() {
+  for (const g of [dyn, camDyn]) {
+    g.traverse(o => { if (o.geometry && !o.isSprite) o.geometry.dispose(); });
+    g.parent.remove(g);
+  }
+  dyn = new THREE.Group(); world.add(dyn);
+  camDyn = new THREE.Group(); camGroup.add(camDyn);
+
+  // objects
+  for (const key of Object.keys(SHAPES)) {
+    if (!P.show[key]) continue;
+    const s = SHAPES[key], v = placed(key);
+    if (key === 'axes') s.geom.edges.forEach(([a, b], n) => dyn.add(arrow(v[a], v[b], s.edgeColors[n])));
+    else dyn.add(segments(s.geom.edges.map(([a, b]) => [v[a], v[b]]), lineMat(s.color)));
+    if (!s.noVertices) dyn.add(points(key === 'axes' ? v.slice(0, 1) : v, pointMat(s.color || '#dddddd', 5)));
+    if (s.geom.faces) for (const shade of [0, 1]) {
+      const tris = [];
+      for (const [ids, sh] of s.geom.faces) if (sh === shade) {
+        const q = ids.map(i => [v[i][0], v[i][1], v[i][2] + 0.003]);
+        tris.push(q[0], q[1], q[2], q[0], q[2], q[3]);
+      }
+      const g = new THREE.BufferGeometry().setFromPoints(tris.map(p => new THREE.Vector3(...p)));
+      dyn.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: shade ? COL.boardLight : COL.boardDark, side: THREE.DoubleSide })));
+    }
+  }
+  worldLabels.visible = P.show.axes;
+
+  // camera pose: the camera frame's axes in the world are the rows of R (columns of Rᵀ)
+  const R = cam.R;
+  camGroup.matrix.set(R[0][0], R[1][0], R[2][0], C[0],
+                      R[0][1], R[1][1], R[2][1], C[1],
+                      R[0][2], R[1][2], R[2][2], C[2],
+                      0, 0, 0, 1);
+  camGroup.matrixWorldNeedsUpdate = true;
+
+  // frustum of the pinhole (no distortion): rays through the image corners, out to the chosen depth
+  const D = Math.max(P.frustumDepth, P.camScale * focalMm() / 1000), W = P.W, H = P.H;   // at least out to the plane
+  const corners = [[0, 0], [W, 0], [W, H], [0, H]].map(p => Cam.pixelToNormalised(p, cam.K));
+  const far = corners.map(([x, y]) => [x * D, y * D, D]);
+  const distOn = Cam.hasDistortion(cam.dist);
+  const fMat = distOn && P.trueFrustum ? lineMat(COL.frustum, 0.35) : lineMat(COL.frustum, 0.8);
+  camDyn.add(segments(far.map(p => [[0, 0, 0], p]), fMat));
+  camDyn.add(polyline([...far, far[0]], fMat));
+  camDyn.add(polyline([[0, 0, 0], [0, 0, D]], dashMat('#9aa0a8')));
+  // the real frustum with the distortion: the image border traced back through the lens model
+  if (distOn && P.trueFrustum) {
+    const border = [];
+    for (let k = 0; k < 4; k++) {
+      const a = [[0, 0], [W, 0], [W, H], [0, H]][k], b = [[W, 0], [W, H], [0, H], [0, 0]][k];
+      for (let i = 0; i < 32; i++) border.push([a[0] + (b[0] - a[0]) * i / 32, a[1] + (b[1] - a[1]) * i / 32]);
+    }
+    const back = border.map(p => Cam.undistort(Cam.pixelToNormalised(p, cam.K), cam.dist));
+    const run = [];
+    for (const [x, y] of back) if (isFinite(x)) run.push([x * D, y * D, D]);
+    if (run.length) camDyn.add(polyline([...run, run[0]], lineMat(COL.distortion)));
+    const cornerRays = [0, 32, 64, 96].map(i => back[i]).filter(([x]) => isFinite(x)).map(([x, y]) => [[0, 0, 0], [x * D, y * D, D]]);
+    if (cornerRays.length) camDyn.add(segments(cornerRays, lineMat(COL.distortion, 0.8)));
+  }
+
+  // image plane at the focal length, with the camera drawn enlarged (scaling f and the sensor together leaves the
+  // picture unchanged): pixel corners through K⁻¹ at depth ±f. A positive scale puts it in front (the upright
+  // virtual image), a negative one behind (the real, inverted one a sensor sees)
+  const d = P.camScale * focalMm() / 1000;
+  const pc = corners.map(([x, y]) => [x * d, y * d, d]);
+  const pos = planeGeom.attributes.position;
+  pc.forEach((p, i) => pos.setXYZ(i, ...p));
+  pos.needsUpdate = true; planeGeom.computeBoundingSphere();
+  camDyn.add(polyline([...pc, pc[0]], lineMat('#8a9099')));
+  // the handle: drag it along the axis to scale; transparent and late so it is drawn over the plane
+  const handle = points([[0, 0, d]], handleMat); handle.renderOrder = 30; camDyn.add(handle);
+  // behind the centre: the frustum continues through C to the image corners
+  if (d < 0) camDyn.add(segments(pc.map(p => [[0, 0, 0], p]), lineMat(COL.frustum, 0.8)));
+  setLabel(fLabel, `f = ${fmt(focalMm())} mm` + (P.camScale !== 1 ? ` (×${fmt(P.camScale)})` : ''));
+  // above the frustum halfway to the plane, clear of the picture behind it
+  fLabel.position.set(0, -Math.abs(corners[0][1] * d / 2) - 0.12, d / 2);
+
+  // rays: from the selected point through the centre of projection to the image plane
+  const rayEnd = xn => [xn[0] * d, xn[1] * d, d];
+  const sp = selectedPoint();
+  if (P.allRays && SHAPES[P.selected.obj] && P.show[P.selected.obj]) {
+    const pairs = [];
+    for (const X of placed(P.selected.obj)) {
+      const q = Cam.projectPoint(X, cam);
+      if (q.Xc[2] <= cam.near) continue;
+      pairs.push([q.Xc, [0, 0, 0]]);
+      if (d < 0 || q.Xc[2] < d) pairs.push([q.Xc, rayEnd(q.xn)]);
+    }
+    camDyn.add(segments(pairs, lineMat('#ffffff', 0.25)));
+  }
+  if (sp) {
+    dyn.add(points([sp.Xw], pointMat(COL.selected, 12, true)));
+    if (sp.Xc[2] > cam.near) {
+      const ray = [[sp.Xc, [0, 0, 0]]];
+      if (d < 0 || sp.Xc[2] < d) ray.push([sp.Xc, rayEnd(sp.xn)]);
+      camDyn.add(segments(ray, lineMat(COL.selected, 0.9)));
+      camDyn.add(points([rayEnd(sp.xn)], pointMat(COL.selected, 8, true)));
+      if (distOn && sp.inModel) {
+        const xd = rayEnd(sp.xd);
+        camDyn.add(segments([[rayEnd(sp.xn), xd]], lineMat(COL.distortion)));
+        camDyn.add(points([xd], pointMat(COL.distortion, 8, true)));
+      }
+    }
+  }
+}
+
+function resize3D() {
+  const w = worldEl.clientWidth, h = worldEl.clientHeight;
+  renderer.setSize(w, h);
+  viewer.aspect = w / h; viewer.updateProjectionMatrix();
+  requestRender();
+}
+let renderPending = false;
+function requestRender() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => { renderPending = false; renderer.render(scene, viewer); });
+}
+
+// pick the nearest vertex on screen (both views): a tap that does not move
+function pickVertex(candidates, x, y, reach) {
+  let best = null, bd = reach;
+  for (const c of candidates) { const dd = Math.hypot(c.x - x, c.y - y); if (dd < bd) { bd = dd; best = c; } }
+  return best;
+}
+function select(hit) {
+  if (!hit) return;
+  P.selected = { obj: hit.obj, i: hit.i };
+  if (SHAPES[hit.obj].movable) P.edit = hit.obj;
+  update();
+}
+// 3D view: drag the image plane's centre along the optical axis to change the enlargement. Listening on the parent
+// in the capture phase runs before OrbitControls, so it can be switched off before it starts orbiting.
+{
+  let dragging = false, pending = null;
+  const axisOnScreen = () => {
+    camGroup.updateMatrixWorld();
+    const O = new THREE.Vector3().applyMatrix4(camGroup.matrixWorld);
+    const a = new THREE.Vector3(0, 0, 1).transformDirection(camGroup.matrixWorld);
+    return { O, a, handle: O.clone().addScaledVector(a, P.camScale * focalMm() / 1000) };
+  };
+  const screenOf = (v, rect) => { const q = v.clone().project(viewer); return [(q.x + 1) / 2 * rect.width, (1 - q.y) / 2 * rect.height, q.z]; };
+  const nearHandle = e => {
+    const rect = renderer.domElement.getBoundingClientRect(), [x, y, z] = screenOf(axisOnScreen().handle, rect);
+    return z < 1 && Math.hypot(x - (e.clientX - rect.left), y - (e.clientY - rect.top)) < 14;
+  };
+  const raycaster = new THREE.Raycaster();
+  function dragTo(e) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    raycaster.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, 1 - (e.clientY - rect.top) / rect.height * 2), viewer);
+    // the point of the optical axis closest to the pointer's ray
+    const { O, a } = axisOnScreen(), r = raycaster.ray.direction, w = O.clone().sub(raycaster.ray.origin);
+    const b = a.dot(r), den = 1 - b * b;
+    if (den < 1e-4) return;   // looking along the axis
+    let k = (b * r.dot(w) - a.dot(w)) / den / (focalMm() / 1000);
+    k = Math.max(SCALE_RANGE[0], Math.min(SCALE_RANGE[1], k));
+    P.camScale = Math.round(Math.abs(k) < 1 ? Math.sign(k) || 1 : k);
+    update();
+  }
+  worldEl.addEventListener('pointerdown', e => {
+    if (e.target !== renderer.domElement || !nearHandle(e)) return;
+    dragging = true; controls.enabled = false;
+    renderer.domElement.setPointerCapture(e.pointerId);
+    renderer.domElement.style.cursor = 'grabbing';
+  }, true);
+  renderer.domElement.addEventListener('pointermove', e => {
+    if (!dragging) { renderer.domElement.style.cursor = e.buttons ? '' : nearHandle(e) ? 'grab' : ''; return; }
+    if (!pending) requestAnimationFrame(() => { dragTo(pending); pending = null; });
+    pending = e;
+  });
+  const end = () => { if (!dragging) return; dragging = false; controls.enabled = true; renderer.domElement.style.cursor = ''; };
+  renderer.domElement.addEventListener('pointerup', end);
+  renderer.domElement.addEventListener('pointercancel', end);
+}
+{
+  let down = null;
+  renderer.domElement.addEventListener('pointerdown', e => { down = controls.enabled ? [e.clientX, e.clientY] : null; });
+  renderer.domElement.addEventListener('pointerup', e => {
+    if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+    const rect = renderer.domElement.getBoundingClientRect(), cands = [];
+    world.updateMatrixWorld();
+    for (const key of Object.keys(SHAPES)) {
+      if (!P.show[key] || SHAPES[key].noVertices) continue;
+      placed(key).forEach((X, i) => {
+        const v = new THREE.Vector3(...X).applyMatrix4(world.matrixWorld).project(viewer);
+        if (v.z < 1) cands.push({ obj: key, i, x: (v.x + 1) / 2 * rect.width, y: (1 - v.y) / 2 * rect.height });
+      });
+    }
+    select(pickVertex(cands, e.clientX - rect.left, e.clientY - rect.top, 18));
+  });
+}
+// image view: drag the principal point, or tap a vertex
+{
+  let drag = null;
+  const toPixel = e => {
+    const r = imageCanvas.getBoundingClientRect();
+    return [(e.clientX - r.left - imgTf.ox) / imgTf.s, (e.clientY - r.top - imgTf.oy) / imgTf.s, e.clientX - r.left, e.clientY - r.top];
+  };
+  imageCanvas.addEventListener('pointerdown', e => {
+    const [u, v, X, Y] = toPixel(e);
+    const ppX = imgTf.ox + imgTf.s * P.cx, ppY = imgTf.oy + imgTf.s * P.cy;
+    if (Math.hypot(X - ppX, Y - ppY) < 16) {
+      drag = { pp: true };
+      imageCanvas.setPointerCapture(e.pointerId);
+    } else drag = { start: [X, Y] };
+  });
+  imageCanvas.addEventListener('pointermove', e => {
+    if (!drag || !drag.pp) return;
+    const [u, v] = toPixel(e);
+    P.cx = Math.round(Math.max(0, Math.min(P.W, u)));
+    P.cy = Math.round(Math.max(0, Math.min(P.H, v)));
+    update();
+  });
+  imageCanvas.addEventListener('pointerup', e => {
+    const d = drag; drag = null;
+    if (!d || d.pp) return;
+    const [, , X, Y] = toPixel(e);
+    if (Math.hypot(X - d.start[0], Y - d.start[1]) > 6) return;
+    const cands = [];
+    for (const it of proj.items) for (const q of it.points)
+      cands.push({ obj: it.key, i: q.i, x: imgTf.ox + imgTf.s * q.p.uv[0], y: imgTf.oy + imgTf.s * q.p.uv[1] });
+    select(pickVertex(cands, X, Y, 18));
+  });
+  imageCanvas.addEventListener('pointercancel', () => { drag = null; });
+}
+
+// ----------------------------------------------------------------------------
+// Maths panel
+// ----------------------------------------------------------------------------
+const fmt = (x, p = 4) => {
+  if (!isFinite(x)) return '–';
+  if (Math.abs(x) < 5e-12) return '0';
+  const s = String(+x.toPrecision(p));
+  return s.includes('e') ? x.toExponential(p - 1) : s.replace('-', '−');
+};
+const fx1 = (x, n = 1) => isFinite(x) ? x.toFixed(n).replace('-', '−') : '–';
+const vec = (v, n = 3) => '(' + v.map(x => fx1(x, n)).join(', ') + ')';
+function matrix(rows, f = fmt, sepAfter = -1) {
+  const cols = rows[0].length;
+  return `<span class="mat" style="grid-template-columns: repeat(${cols}, auto)">` +
+    rows.map(r => r.map((x, j) => `<span${sepAfter >= 0 && j === sepAfter + 1 ? ' class="sep"' : ''}>${f(x)}</span>`).join('')).join('') + '</span>';
+}
+const openState = {};
+function section(id, title, html) {
+  return `<details data-id="${id}"${openState[id] === false ? '' : ' open'}><summary>${title}</summary>${html}</details>`;
+}
+function updateMath() {
+  const el = document.getElementById('math');
+  el.querySelectorAll('details').forEach(d => { openState[d.dataset.id] = d.open; });
+  const K = cam.K, fx = K[0][0], fy = K[1][1], distOn = Cam.hasDistortion(cam.dist);
+  const fov = Cam.fieldOfView(K, P.W, P.H), fovD = distOn ? Cam.fieldOfView(K, P.W, P.H, cam.dist) : null;
+  const eq35 = 43.27 / (2 * Math.tan(fov.d * Math.PI / 360));
+  const fovTxt = f => `${fx1(f.h)}° × ${fx1(f.v)}°, diagonal ${fx1(f.d)}°`;
+  let html = '';
+
+  const pitch = 1000 * P.sensorW / P.W, a = fy / fx, square = Math.abs(a - 1) < 1e-9;
+  const pixelSize = square ? `pixel size ${fmt(pitch, 3)} µm`
+    : `pixel size ${fmt(pitch * Math.sqrt(a), 3)} × ${fmt(pitch / Math.sqrt(a), 3)} µm (aspect f<sub>y</sub>/f<sub>x</sub> = ${fmt(a)}, the area of ${fmt(pitch, 3)} µm squares)`;
+  const fxLine = P.entry === 'pixels'
+    ? `<div class="note num">f<sub>x</sub>, f<sub>y</sub>: the focal length in pixels, entered directly; with the sensor width that is
+      f = √(f<sub>x</sub> f<sub>y</sub>) · sensor width / W = ${fmt(focalMm())} mm<br>${pixelSize}</div>`
+    : square
+    ? `<div class="note num">f<sub>x</sub> = f · W / sensor width = ${fmt(P.focal)} mm · ${P.W} px / ${fmt(P.sensorW)} mm = ${fx1(fx)} px` +
+      `<br>${pixelSize}</div>`
+    : `<div class="note num">f · W / sensor width = ${fmt(P.focal)} mm · ${P.W} px / ${fmt(P.sensorW)} mm = ${fx1(Math.sqrt(fx * fy))} px,
+      split by the aspect: f<sub>x</sub> = ${fx1(Math.sqrt(fx * fy))} / √${fmt(a)} = ${fx1(fx)} px, f<sub>y</sub> = ${fx1(Math.sqrt(fx * fy))} · √${fmt(a)} = ${fx1(fy)} px` +
+      `<br>${pixelSize}</div>`;
+  html += section('K', 'Intrinsics K', `
+    <div class="eq"><i class="v">K</i> = ${matrix(K, x => fx1(x, 1))}</div>
+    ${fxLine}
+    <div class="note num">field of view ${fovTxt(fov)}${fovD ? `<br><span style="color:${COL.distortion}">with the distortion ${fovTxt(fovD)}</span>` : ''}
+    <br>35 mm equivalent focal length ${fx1(eq35, 0)} mm (by the diagonal)</div>`);
+
+  html += section('Rt', 'Extrinsics [R | t]', `
+    <div class="eq">[<i class="v">R</i> | <i class="v">t</i>] = ${matrix(cam.R.map((r, i) => [...r, cam.t[i]]), x => fx1(x, 3), 2)}</div>
+    <div class="note num">camera centre <i class="v">C</i> = ${vec(C, 2)} m, <i class="v">t</i> = −<i class="v">R C</i>.
+    The rows of <i class="v">R</i> are the camera's x (right), y (down) and z (forward) axes in world coordinates.</div>`);
+
+  if (distOn) {
+    const d = cam.dist;
+    html += section('dist', 'Distortion', `
+      <div class="note num">k₁ ${fmt(d.k1, 3)}, k₂ ${fmt(d.k2, 3)}, k₃ ${fmt(d.k3, 3)}, p₁ ${fmt(d.p1, 3)}, p₂ ${fmt(d.p2, 3)}</div>
+      <div class="note">x<sub>d</sub> = x (1 + k₁r² + k₂r⁴ + k₃r⁶) + 2p₁xy + p₂(r² + 2x²)<br>
+      y<sub>d</sub> = y (1 + k₁r² + k₂r⁴ + k₃r⁶) + p₁(r² + 2y²) + 2p₂xy</div>
+      ${isFinite(cam.rMax) ? `<div class="note warn">The polynomial turns back at r = ${fmt(cam.rMax, 3)} (${fx1(Math.atan(cam.rMax) * 180 / Math.PI)}° off the axis); nothing beyond is drawn.</div>` : ''}`);
+  }
+
+  html += section('P', 'Projection matrix P = K [R | t]', `
+    <div class="eq"><i class="v">P</i> = ${matrix(cam.P, x => fmt(x, 4), 2)}</div>
+    <div class="note">λ [u v 1]ᵀ = <i class="v">P</i> [X Y Z 1]ᵀ, with λ = Z<sub>c</sub>: the pinhole projection, before any distortion.</div>`);
+
+  const sp = selectedPoint();
+  if (sp) {
+    const name = SHAPES[P.selected.obj].label;
+    const behind = sp.Xc[2] <= 0;
+    const outside = !behind && (sp.uv[0] < 0 || sp.uv[0] > P.W || sp.uv[1] < 0 || sp.uv[1] > P.H);
+    const rows = [
+      ['world point X<sub>w</sub>', vec(sp.Xw, 3)],
+      ['camera frame X<sub>c</sub> = R X<sub>w</sub> + t', vec(sp.Xc, 3)],
+    ];
+    if (!behind) {
+      rows.push(['normalised x = X<sub>c</sub>/Z<sub>c</sub>, y = Y<sub>c</sub>/Z<sub>c</sub>', vec(sp.xn, 4)]);
+      if (distOn) {
+        rows.push(['r = √(x² + y²)', fx1(sp.r, 4)]);
+        rows.push(['radial factor 1 + k₁r² + k₂r⁴ + k₃r⁶', fx1(sp.radial, 4)]);
+        rows.push(['distorted (x<sub>d</sub>, y<sub>d</sub>)', sp.inModel ? vec(sp.xd, 4) : '–']);
+        rows.push(['pinhole pixel K (x, y, 1)', vec(sp.ideal, 1)]);
+      }
+      rows.push([`pixel (u, v) = (f<sub>x</sub>x<sub>d</sub> + s y<sub>d</sub> + c<sub>x</sub>, f<sub>y</sub>y<sub>d</sub> + c<sub>y</sub>)`.replace(/<sub>d<\/sub>/g, distOn ? '<sub>d</sub>' : ''),
+                 sp.inModel ? vec(sp.uv, 1) : '–']);
+    }
+    const notes = [];
+    if (behind) notes.push('Behind the camera (Z<sub>c</sub> ≤ 0): it has no image.');
+    else if (!sp.inModel) notes.push('Beyond the reach of the distortion model.');
+    else if (outside) notes.push('Projects outside the image.');
+    if (distOn && sp.inModel && !behind) notes.push(`<span style="color:${COL.distortion}">The distortion moves it by ${fx1(Math.hypot(sp.uv[0] - sp.ideal[0], sp.uv[1] - sp.ideal[1]), 1)} px.</span>`);
+    html += section('pt', `Selected point: ${name}, vertex ${P.selected.i}`, `
+      <table class="steps">${rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join('')}</table>
+      ${notes.map(n => `<div class="note warn">${n}</div>`).join('')}`);
+  } else html += section('pt', 'Selected point', '<div class="note">Tap a vertex in either view.</div>');
+  el.innerHTML = html;
+}
+function updateCaption() {
+  const distOn = Cam.hasDistortion(cam.dist);
+  const parts = [`<span class="dot" style="background:#fff"></span>selected point`];
+  if (distOn) {
+    parts.push(`<span class="sw" style="border-color:${COL.distortion}"></span>shift by the distortion`);
+    if (P.showIdeal) parts.push(`<span class="sw dash" style="border-color:#9aa0a8"></span>pinhole (no distortion)`);
+  }
+  if (P.show.horizon) parts.push(`<span class="sw dash" style="border-color:${COL.horizon}"></span>horizon`);
+  parts.push('+ principal point (drag it)');
+  document.getElementById('caption').innerHTML = parts.join(' · ');
+}
+
+// ----------------------------------------------------------------------------
+// Controls
+// ----------------------------------------------------------------------------
+const gui = new GUI({ container: document.getElementById('gui'), title: 'Camera' });
+const refresh = () => gui.controllersRecursive().forEach(c => c.updateDisplay());
+
+const fIn = gui.addFolder('Intrinsics');
+fIn.add(P, 'entry', ['focal length', 'pixels']).name('enter as').onChange(v => {
+  // carry the current values over to the other way of entering them
+  if (v === 'pixels') { P.fxPx = Cam.fxFromFocal(P.focal, P.sensorW, P.W) / Math.sqrt(P.aspect); P.fyPx = P.fxPx * P.aspect; }
+  else { P.focal = Math.sqrt(P.fxPx * P.fyPx) * P.sensorW / P.W; P.aspect = P.fyPx / P.fxPx; }
+  showEntry(); update();
+});
+const cFocal = addMapped(fIn, P, 'focal', 2, 300, 0.1, LOG_MAP).name('focal length f (mm)').onChange(update);
+const cSensor = fIn.add(P, 'sensorW', SENSORS).name('sensor').onChange(update);
+const cSensorW = fIn.add(P, 'sensorW', 2, 60, 0.1).name('sensor width (mm)').onChange(update);
+const cAspect = fIn.add(P, 'aspect', 0.5, 2, 0.01).name('pixel aspect fy/fx').onChange(update);
+const cFx = addMapped(fIn, P, 'fxPx', 50, 30000, 1, LOG_MAP).name('fx (px)').onChange(update);
+const cFy = addMapped(fIn, P, 'fyPx', 50, 30000, 1, LOG_MAP).name('fy (px)').onChange(update);
+function showEntry() {
+  const mm = P.entry !== 'pixels';
+  // the sensor stays in both: in pixels it sets the pixel size, so the focal length in mm the 3D view draws
+  [cFocal, cAspect].forEach(c => c.show(mm));
+  [cFx, cFy].forEach(c => c.show(!mm));
+}
+let lastWH = [P.W, P.H];
+// a new resolution: the same lens and sensor sampled more or less finely, so the principal point and the
+// focal length in pixels scale with it
+const setResolution = (W, H) => {
+  const sx = W / lastWH[0], sy = H / lastWH[1];
+  P.cx *= sx; P.cy *= sy; P.fxPx *= sx; P.fyPx *= sx;
+  P.W = W; P.H = H; lastWH = [W, H];
+  setRanges(); update();
+};
+fIn.add(P, 'resolution', Object.keys(RESOLUTIONS)).name('resolution').onChange(v => { if (RESOLUTIONS[v]) setResolution(...RESOLUTIONS[v]); });
+const cW = fIn.add(P, 'W', 16, 8000, 1).name('width W (px)');
+const cH = fIn.add(P, 'H', 16, 8000, 1).name('height H (px)');
+for (const c of [cW, cH]) c.onChange(() => {
+  P.resolution = Object.keys(RESOLUTIONS).find(k => RESOLUTIONS[k] && RESOLUTIONS[k][0] === P.W && RESOLUTIONS[k][1] === P.H) || 'custom';
+  setResolution(P.W, P.H);
+});
+const cCx = fIn.add(P, 'cx', 0, P.W, 0.5).name('principal point cx').onChange(update);
+const cCy = fIn.add(P, 'cy', 0, P.H, 0.5).name('principal point cy').onChange(update);
+fIn.add({ centre: () => { P.cx = P.W / 2; P.cy = P.H / 2; update(); } }, 'centre').name('centre the principal point');
+const cSkew = fIn.add(P, 'skew', -1000, 1000, 1).name('skew s (px)').onChange(update);
+function setRanges() {
+  cCx.max(P.W); cCy.max(P.H);
+  P.cx = Math.min(P.cx, P.W); P.cy = Math.min(P.cy, P.H);
+}
+
+const fEx = gui.addFolder('Extrinsics');
+fEx.add(P, 'camX', -15, 15, 0.05).name('camera X (m)').onChange(update);
+fEx.add(P, 'camY', -15, 15, 0.05).name('camera Y (m)').onChange(update);
+fEx.add(P, 'camZ', -2, 10, 0.05).name('camera Z (m)').onChange(update);
+fEx.add(P, 'yaw', -180, 180, 0.5).name('yaw (°)').onChange(update);
+fEx.add(P, 'pitch', -90, 90, 0.5).name('pitch (°)').onChange(update);
+fEx.add(P, 'roll', -180, 180, 0.5).name('roll (°)').onChange(update);
+fEx.add({ aim: () => {
+  const a = Cam.lookAt([P.camX, P.camY, P.camZ], SCENE_CENTRE);
+  P.yaw = round1(a.yaw); P.pitch = round1(a.pitch); update();
+} }, 'aim').name('look at the objects');
+
+const fDist = gui.addFolder('Distortion');
+fDist.add(P, 'distPreset', Object.keys(DIST_PRESETS)).name('preset').onChange(v => {
+  if (DIST_PRESETS[v]) Object.assign(P, DIST_PRESETS[v]);
+  update();
+});
+const custom = () => { P.distPreset = 'custom'; update(); };
+addMapped(fDist, P, 'k1', -0.6, 0.6, 0.001, symPowMap(2)).name('k₁ (radial)').onChange(custom);
+addMapped(fDist, P, 'k2', -0.3, 0.3, 0.001, symPowMap(2)).name('k₂ (radial)').onChange(custom);
+addMapped(fDist, P, 'k3', -0.1, 0.1, 0.0005, symPowMap(2)).name('k₃ (radial)').onChange(custom);
+addMapped(fDist, P, 'p1', -0.05, 0.05, 0.0005, symPowMap(2)).name('p₁ (tangential)').onChange(custom);
+addMapped(fDist, P, 'p2', -0.05, 0.05, 0.0005, symPowMap(2)).name('p₂ (tangential)').onChange(custom);
+fDist.add(P, 'showIdeal').name('show the pinhole image (dashed)').onChange(update);
+fDist.add(P, 'distGrid').name('show how a pixel grid bends').onChange(update);
+fDist.add(P, 'trueFrustum').name('3D: frustum through the image edges').onChange(update);
+
+const fScene = gui.addFolder('Scene');
+for (const key of Object.keys(SHAPES)) fScene.add(P.show, key).name(SHAPES[key].label).onChange(update);
+fScene.add(P.show, 'horizon').name('horizon (vanishing line of the ground)').onChange(update);
+const movable = Object.keys(SHAPES).filter(k => SHAPES[k].movable);
+fScene.add(P, 'edit', Object.fromEntries(movable.map(k => [SHAPES[k].label, k]))).name('move').onChange(refresh);
+const objProxy = {};
+for (const k of ['x', 'y', 'z', 'yaw'])
+  Object.defineProperty(objProxy, k, { get: () => P.objects[P.edit][k], set: v => { P.objects[P.edit][k] = v; } });
+fScene.add(objProxy, 'x', -8, 8, 0.05).name('object X (m)').onChange(update);
+fScene.add(objProxy, 'y', -8, 12, 0.05).name('object Y (m)').onChange(update);
+fScene.add(objProxy, 'z', -1, 4, 0.05).name('object Z (m)').onChange(update);
+fScene.add(objProxy, 'yaw', -180, 180, 1).name('object turn (°)').onChange(update);
+
+const fView = gui.addFolder('3D view');
+addMapped(fView, P, 'camScale', ...SCALE_RANGE, 1, SIGNED_LOG_MAP).name('camera enlarged ×').onChange(update);
+fView.add(P, 'frustumDepth', 1, 30, 0.5).name('frustum depth (m)').onChange(update);
+fView.add(P, 'allRays').name('rays from every vertex of the object').onChange(update);
+
+gui.add({ reset: () => {
+  const keep = clone(DEFAULTS);
+  for (const k of Object.keys(keep)) P[k] = keep[k];   // P.show copies into the object the checkboxes hold
+  lastWH = [P.W, P.H];
+  setRanges(); showEntry(); update();
+} }, 'reset').name('reset everything');
+// P.show must stay the object the checkboxes are bound to
+{
+  const showObj = P.show;
+  Object.defineProperty(P, 'show', { get: () => showObj, set: v => Object.assign(showObj, v), enumerable: true });
+}
+gui.controllersRecursive().filter(c => c._hasSlider).forEach(tameWheel);
+fDist.close(); fScene.close();
+if (matchMedia('(max-width: 760px)').matches) gui.close();
+
+// ----------------------------------------------------------------------------
+function update() {
+  buildCamera();
+  projectScene();
+  drawImageView();
+  drawTexture();
+  rebuild3D();
+  updateMath();
+  updateCaption();
+  refresh();
+  saveState();
+  requestRender();
+}
+function layout() { resize3D(); drawImageView(); }
+showEntry();
+new ResizeObserver(layout).observe(worldEl);
+new ResizeObserver(() => drawImageView()).observe(document.getElementById('imageWrap'));
+update();
+resize3D();
+</script>
+</body>
+</html>
