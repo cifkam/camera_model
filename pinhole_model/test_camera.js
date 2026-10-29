@@ -1,4 +1,4 @@
-// Checks for camera.js. Run: node projection/test_camera.js
+// Checks for camera.js. Run: node pinhole_model/test_camera.js
 const C = require('./camera.js');
 let fails = 0;
 const check = (name, got, expected, tol = 1e-9) => {
