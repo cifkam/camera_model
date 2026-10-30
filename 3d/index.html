@@ -49,7 +49,7 @@
 </script>
 </head>
 <body>
-<div id="help"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · drag the focus point to focus, and with the view camera a standard's dots to tilt (top, bottom) or swing (sides) · </span><a href="../" style="color: #9ad8ff; pointer-events: auto">all tools</a></div>
+<div id="help"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · drag the focus point to focus, and with the view camera a standard's dots to tilt (top, bottom) or swing (sides), with Shift to rise (top, bottom) or shift (sides) it · </span><a href="../" style="color: #9ad8ff; pointer-events: auto">all tools</a></div>
 <div id="info"><div id="infoTitle">Legend</div><div id="infoBody"></div></div>
 <script type="module">
 import * as THREE from 'three';
@@ -150,7 +150,8 @@ const P = {
   showCoverage: true,
   showCoverageCone: false,   // the lens's coverage cone in object space and its section with the plane of sharp focus
   showHyperfocal: true,      // a point on the lens axis at the hyperfocal distance (untilted lens formula)
-  showParallel: false,       // planes parallel to the film, each drawn as the rectangle that projects onto the film gate
+  showParallel: false,
+  showShift: false,          // how far rise / fall and shift reach: a dashed rectangle at each standard       // planes parallel to the film, each drawn as the rectangle that projects onto the film gate
   showFov: true, showSharpArea: true, showFullPlane: false,
   showPlanes: true, showLines: false, showGround: true,
   showUnderground: true,   // draw the faint lines below the ground (only matters while the ground is shown)
@@ -168,7 +169,7 @@ const THEMES = {
 const COL = {
   posf: 0x4fe07a, posfVirtual: 0xff8a3d, film: 0xffffff, lens: 0x4fa8ff,
   scheimpflug: 0xff4fd8, hinge: 0xffd84f, axis: 0x9ad8ff, fov: 0xc9a0ff, dof: 0x3ee6ff, vignette: 0xff5252,
-  parallel: 0xd8c08a, hyperfocal: 0xffb347,
+  parallel: 0xd8c08a, hyperfocal: 0xffb347, shift: 0xd0d4da,
 };
 
 // Circle of confusion on film (mm): tolerable blur on the print, divided by the enlargement.
@@ -608,18 +609,30 @@ function update() {
   const camLocal = new THREE.Group(); camLocal.position.copy(pivot).negate(); cam.add(camLocal);   // built in unpitched coords
   camLocal.add(buildStandard(rearL, iw, ih, bar, depth, 'rear'));
   camLocal.add(buildStandard(frontL, iw, ih, bar, depth, 'front'));
+  // the reach of rise / fall and shift: a dashed rectangle in each standard's plane, centred where it sits without them,
+  // whose edges are where the standard's edges get at the limits (raised all the way, lowered, shifted either way)
+  if (P.showShift && P.camera === 'view camera') {
+    const lim = formatRanges().shift * MM;
+    mats.shiftReach ??= new THREE.LineDashedMaterial({ color: COL.shift, dashSize: 0.01, gapSize: 0.007, transparent: true, opacity: 0.8 });
+    for (const [nom, k] of [[rearNom, 'rear'], [frontNom, 'front']]) {
+      const g = standardPose(nom, P[k + 'Tilt'], P[k + 'Swing'], 0, 0, fh / 2), ax = fw / 2 + lim, ay = fh / 2 + lim;
+      const pts = [[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]].map(([x, y]) => new THREE.Vector3(x * ax, y * ay, 0).applyQuaternion(g.quaternion).add(g.position));
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), mats.shiftReach);
+      line.computeLineDistances(); camLocal.add(line);
+    }
+  }
   // the turning handles (view camera only): dots on each standard's frame, top and bottom to tilt it, left and right
   // to swing it. Each turns about the standard's pivot (its centre, or its bottom edge with the base pivot, where the
   // bottom dot would not move and is left out): tilt about the standard's own x, swing about the vertical.
   turnSpace = camLocal; turnHandles = [];
   if (P.camera === 'view camera') {
-    for (const [pose, tKey, sKey] of [[rearL, 'rearTilt', 'rearSwing'], [frontL, 'frontTilt', 'frontSwing']]) {
+    for (const [pose, tKey, sKey, std] of [[rearL, 'rearTilt', 'rearSwing', 'rear'], [frontL, 'frontTilt', 'frontSwing', 'front']]) {
       const at = (x, y) => new THREE.Vector3(x, y, 0).applyQuaternion(pose.quaternion).add(pose.position);
       const O = P.tiltPivot === 'base' ? at(0, -fh / 2) : pose.position.clone();
       const tAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(pose.quaternion), up = new THREE.Vector3(0, 1, 0);
       for (const sg of [1, -1]) {
-        if (!(P.tiltPivot === 'base' && sg < 0)) turnHandles.push({ name: tKey + sg, key: tKey, p: at(0, sg * fh / 2), O, axis: tAxis });
-        turnHandles.push({ name: sKey + sg, key: sKey, p: at(sg * fw / 2, 0), O, axis: up });
+        if (!(P.tiltPivot === 'base' && sg < 0)) turnHandles.push({ name: tKey + sg, key: tKey, std, centre: pose.position.clone(), p: at(0, sg * fh / 2), O, axis: tAxis });
+        turnHandles.push({ name: sKey + sg, key: sKey, std, centre: pose.position.clone(), p: at(sg * fw / 2, 0), O, axis: up });
       }
     }
     const dots = new THREE.Points(new THREE.BufferGeometry().setFromPoints(turnHandles.map(h => h.p)), turnDotMat);
@@ -943,6 +956,7 @@ function update() {
   if (showParallel)
     txt += `${sw(COL.parallel)}Planes parallel to the film every ${parallelSpacing} m: anything lying in them is imaged as a similar rectangle (no keystoning)\n`;
   txt += `${sw(COL.axis)}lens axis / focus point   ${sw(COL.film)}film plane   ${sw(COL.lens)}lens plane`;
+  if (viewCam && P.showShift) txt += `\n${sw(COL.shift)}dashed: how far rise / fall and shift reach (±${formatRanges().shift} mm)`;
   if (viewCam) {
     txt += `\n${sw(COL.scheimpflug)}Scheimpflug line (film ∩ lens): ${schLine || lensFilmAngle > 1e-6 ? 'present' : 'at infinity (planes parallel)'}\n`;
     txt += `${sw(COL.hinge)}Hinge line: distance from lens J = ${Number.isFinite(J) ? fmt(J) + ' m' : '∞'}` +
@@ -1015,7 +1029,7 @@ const resetCtrl = gui.add({ reset: () => { Object.assign(P, ZERO); gui.controlle
 function applyCameraMode() {
   const view = P.camera === 'view camera';
   // camera pitch, image circle, Scheimpflug/hinge lines and film-parallel planes only matter with movements
-  for (const x of [fF, fR, pivotCtrl, resetCtrl, icCtrl, linesCtrl, parallelCtrl, pitchCtrl]) view ? x.show() : x.hide();
+  for (const x of [fF, fR, pivotCtrl, resetCtrl, icCtrl, linesCtrl, parallelCtrl, pitchCtrl, shiftShowCtrl]) view ? x.show() : x.hide();
   if (!view) { Object.assign(P, ZERO); P.cameraPitch = 0; }
 }
 cameraCtrl.onChange(() => { applyCameraMode(); gui.controllersRecursive().forEach(c => c.updateDisplay()); update(); });
@@ -1043,6 +1057,7 @@ fV.add(P, 'showHyperfocal').name('hyperfocal distance (point on the axis)');
 const parallelCtrl = fV.add(P, 'showParallel').name('planes parallel to film (no keystone)');
 fV.add(P, 'showPlanes').name('extended film & lens planes');
 const linesCtrl = fV.add(P, 'showLines').name('Scheimpflug & hinge lines');
+const shiftShowCtrl = fV.add(P, 'showShift').name('reach of rise / fall and shift');
 fV.add(P, 'showGround').name('ground');
 fV.add(P, 'showUnderground').name('lines below the ground');
 fV.close();
@@ -1091,6 +1106,8 @@ if (matchMedia('(max-width: 700px)').matches) gui.close();   // phones: start wi
 // ----------------------------------------------------------------------------
 // Dragging the focus point slides it along the lens axis, to the point of the axis nearest the pointer's ray, and
 // focuses there (the rear standard moves along the rail, as with the focus slider).
+// Shift-dragging one slides the standard square to the rail instead, following the pointer across the plane through
+// its centre: the top and bottom dots raise and lower it, the side ones shift it.
 // Dragging a standard's dot turns it so that the dot follows the pointer: the angle comes from how fast the dot
 // moves across the screen per radian of turn. Listening on the body in the capture phase runs before OrbitControls,
 // which never sees a drag that starts on a dot.
@@ -1129,13 +1146,37 @@ if (matchMedia('(max-width: 700px)').matches) gui.close();   // phones: start wi
     const name = nearDot(e);
     if (!name) return;
     e.stopPropagation();
-    drag = { name, x: e.clientX, y: e.clientY };
+    drag = { name, x: e.clientX, y: e.clientY, slide: e.shiftKey && name !== 'focus', prev: null };
     renderer.domElement.setPointerCapture(e.pointerId);
-    renderer.domElement.style.cursor = 'grabbing';
+    renderer.domElement.style.cursor = drag.slide ? 'move' : 'grabbing';
   }, { capture: true });
+  // where the pointer's ray meets the plane square to the rail through a standard's centre, in camLocal coordinates
+  function slideHit(e, h) {
+    raycaster.setFromCamera(new THREE.Vector2(e.clientX / innerWidth * 2 - 1, 1 - e.clientY / innerHeight * 2), camera);
+    turnSpace.updateWorldMatrix(true, false);
+    const inv = turnSpace.matrixWorld.clone().invert();
+    const o = raycaster.ray.origin.clone().applyMatrix4(inv), d = raycaster.ray.direction.clone().transformDirection(inv);
+    if (Math.abs(d.z) < 1e-4) return null;   // the plane seen edge on
+    const t = (h.centre.z - o.z) / d.z;
+    return t > 0 ? o.addScaledVector(d, t) : null;
+  }
   renderer.domElement.addEventListener('pointermove', e => {
     if (!drag) { renderer.domElement.style.cursor = !e.buttons && nearDot(e) ? 'grab' : ''; return; }
     if (drag.name === 'focus') { dragFocus(e); return; }
+    if (drag.slide) {
+      const h = turnHandles.find(t => t.name === drag.name), hit = h && slideHit(e, h);
+      if (!hit) return;
+      if (drag.prev) {
+        const lim = formatRanges().shift, mv = (key, dmm) => { P[key] = Math.round(THREE.MathUtils.clamp(P[key] + dmm, -lim, lim) * 10) / 10; };
+        // the top and bottom dots raise and lower the standard, the side ones shift it
+        if (h.key.endsWith('Tilt')) mv(h.std + 'Rise', (hit.y - drag.prev.y) / MM);
+        else mv(h.std + 'Shift', (hit.x - drag.prev.x) / MM);
+        gui.controllersRecursive().forEach(c => c.updateDisplay());
+        update();
+      }
+      drag.prev = hit;
+      return;
+    }
     const h = turnHandles.find(t => t.name === drag.name);
     if (!h) return;
     turnSpace.updateWorldMatrix(true, false);

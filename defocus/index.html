@@ -62,7 +62,7 @@
 <body>
 <div id="app">
   <section id="world">
-    <div id="help3d"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex · drag the dots (sensor, focus, camera; Shift: height) or the f-number · </span><a href="../">all tools</a></div>
+    <div id="help3d"><span class="hint">drag: orbit · right-drag: pan · wheel: zoom · tap a vertex · drag the dots (Shift: height, or rise and shift) or the f-number · </span><a href="../">all tools</a></div>
     <div id="gui"></div>
   </section>
   <section id="side">
@@ -180,7 +180,7 @@ const DEFAULTS = {
   },
   edit: 'pyramid',
   selected: { obj: 'pyramid', i: 4 },   // the apex
-  camScale: 20, frustumDepth: 10, allCones: false, imageSpace: true, showCone: true, showDofImage: true, blurOutlines: true,
+  camScale: 20, frustumDepth: 10, allCones: false, imageSpace: true, showCone: true, showDofImage: true, blurOutlines: true, showShift: false,
 };
 const STORE = 'defocus.state';
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -217,6 +217,8 @@ const SENSOR_RES = { 9.8: '1600×1200 (4:3)', 13.2: '1800×1200 (3:2)', 17.3: '1
 const sensorH = () => P.sensorW * P.H / P.W;
 // a circle of confusion that suits the format, the usual diagonal / 1500 (0.029 mm on full frame): what picking a
 // format or a preset sets; the slider then changes it freely
+// how far either standard rises, falls or shifts: 60 % of the format's width either way, as on the 3D page
+const shiftLimit = () => Math.round(0.6 * P.sensorW);
 const cocForSensor = () => +(Math.hypot(P.sensorW, sensorH()) / 1500).toPrecision(2);
 
 // ----------------------------------------------------------------------------
@@ -276,6 +278,9 @@ function buildCamera() {
     // the rail depth whose sensor passes through a point behind the lens (sensor frame, mm from L)
     railThrough: Pt => rail(Cam.add(Lb, Cam.mulv(Rs, Pt))),
     swingAxis: toS([0, 1, 0]),                         // both standards swing about the body's vertical
+    bodyX: toS([1, 0, 0]),                             // and shift along its horizontal
+    // where the lens and the sensor's centre would sit without rise and shift (relative to L, mm)
+    lensHome: toS(Cam.scale(Lb, -1)), sensorHome: toS(Cam.sub([0, 0, -Dc], Lb)),
   };
 }
 // The sharp image of a point at camera coordinates Xc (metres, relative to L): on its chief ray, at v_z behind the lens
@@ -290,17 +295,22 @@ const coneSection = (img, d, rim = lens.rim) => rim.map(R => Cam.add(R, Cam.scal
 // of diameter A |D − D_z| / D_z while the lens is square to the sensor (worked out directly, the outline only when
 // asked for), an ellipse once it is turned (traced with every rim ray, or with every third for the many samples along
 // the edges, which only need its width).
+// A point whose image is not behind the lens, or whose blur would be wider than eight pictures (a strongly swung lens
+// can put a sharp image almost in the sensor's plane, far off to the side), leaves nothing visible: null, like no image.
+const MAX_BLUR = () => 8 * Math.max(P.W, P.H);
 function blurOf(Xc, coarse = false) {
   const img = sharpImage(Xc);
-  if (!img) return null;
+  if (!img || !(img.P[2] < 0)) return null;
   const K = cam.K, p = pitch(), toPx = q => q.map(([x, y]) => [K[0][2] - x / p, K[1][2] - y / p]);
   if (!lens.turned) {
     const Dz = -img.P[2], c = lens.A * Math.abs(lens.D - Dz) / Dz;
+    if (!(c / p < MAX_BLUR())) return null;
     return { max: c, min: c, px: c / p, img, circle: true, get uv() { return this._uv ||= toPx(coneSection(img, lens.D)); } };
   }
   const rim = coarse ? lens.rim.filter((_, j) => j % 3 === 0) : lens.rim, q = coneSection(img, lens.D, rim), h = rim.length / 2;
   let max = 0, min = Infinity;
   for (let j = 0; j < h; j++) { const w = Math.hypot(q[j][0] - q[j + h][0], q[j][1] - q[j + h][1]); max = Math.max(max, w); min = Math.min(min, w); }
+  if (!(max / p < MAX_BLUR())) return null;
   return { uv: toPx(q), max, min, px: max / p, img };
 }
 // how wide a blur shape is across a direction (dx, dy) in the picture, in pixels
@@ -385,7 +395,7 @@ function drawContent(ctx, tf, lw) {
   const items = [...proj.items].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
   for (const it of items) {
     for (const f of it.faces) {
-      const sigma = f.c * tf.s / 4;   // a uniform disc of diameter c has a standard deviation of c/4
+      const sigma = Math.min(200, f.c * tf.s / 4);   // a uniform disc of diameter c has a standard deviation of c/4 (capped: a canvas blur that wide only costs)
       ctx.filter = sigma > 0.3 ? `blur(${sigma.toFixed(2)}px)` : 'none';
       ctx.fillStyle = f.shade ? 'rgba(233,233,233,.85)' : 'rgba(20,21,24,.85)';
       ctx.beginPath();
@@ -594,6 +604,7 @@ const camGroup = new THREE.Group(); camGroup.matrixAutoUpdate = false; world.add
 let camDyn = new THREE.Group(); camGroup.add(camDyn);
 const lensLabel = textLabel('#9ad8ff', 0.024, 2.4); camGroup.add(lensLabel);   // drag it to change the f-number
 const sensorLabel = textLabel('#ffd27a', 0.024); camGroup.add(sensorLabel);
+const reachMat = new THREE.LineDashedMaterial({ color: '#d0d4da', dashSize: 0.03, gapSize: 0.02, transparent: true, opacity: 0.8 });
 const sensorMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
 const cameraHandleMat = new THREE.PointsMaterial({ color: COL.lens, size: 10, sizeAttenuation: false, map: dotTex,
   transparent: true, alphaTest: 0.5, depthTest: false });
@@ -731,8 +742,10 @@ function rebuild3D() {
   // plane in focus can run off to the horizon, so it is clipped rather than drawn through the sensor's corners.
   const far = at(3 * D), edges = [0, 1, 2, 3].flatMap(i => [[[0, 0, 0], far[i]], [far[i], far[(i + 1) % 4]]]);
   function objectPlane(d) {
-    const S0 = Cam.scale(aL, -d / aL[2]);   // where the lens axis meets the plane
-    const X = [S0, Cam.add(S0, [0.2 * d, 0, 0]), Cam.add(S0, [0, 0.2 * d, 0])].map(objectOf);
+    // three points close round where the lens axis meets the plane (it is behind the lens by more than f, so they all
+    // have objects: points further out could fall nearer than f with a turned lens, on one side only, and lose the plane)
+    const S0 = Cam.scale(aL, -d / aL[2]), e = 1e-3 * d;
+    const X = [S0, Cam.add(S0, [e, 0, 0]), Cam.add(S0, [0, e, 0])].map(objectOf);
     if (X.some(x => !x)) return null;
     const u = Cam.sub(X[1], X[0]), w = Cam.sub(X[2], X[0]);
     const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]], c = Cam.dot(n, X[0]);
@@ -793,6 +806,16 @@ function rebuild3D() {
   const board = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => Cam.mulv(lens.Rl, [x * half, y * half, 0]));
   camDyn.add(fan(board, fillMat('#8a9099', 0.08)));
   camDyn.add(polyline(closed(board), lineMat('#8a9099')));
+  // the reach of rise / fall and shift: a dashed rectangle in each standard's plane, centred where it sits without them,
+  // whose edges are where the standard's edges get at the limits (raised all the way, lowered, shifted either way)
+  if (P.showShift && isView()) {
+    const hw = P.W / 2 * pitch() * k, hh = P.H / 2 * pitch() * k, lim = shiftLimit() * k;
+    for (const [home, [ax, ay], Rm] of [[Cam.scale(lens.lensHome, k), [half, half], lens.Rl],
+                                         [Cam.scale(lens.sensorHome, k), [hw, hh], [[1, 0, 0], [0, 1, 0], [0, 0, 1]]]]) {
+      const reach = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => Cam.add(home, Cam.mulv(Rm, [x * (ax + lim), y * (ay + lim), 0])));
+      camDyn.add(polyline(closed(reach), reachMat));
+    }
+  }
   const turners = turnHandles();
   if (turners.length) { const t = points(turners.map(h => h.at), turnHandleMat); t.renderOrder = 30; camDyn.add(t); }
   setLabel(lensLabel, `f/${fmt(lens.N, 3)}`);
@@ -838,7 +861,7 @@ function rebuild3D() {
   const drawCone = (Xc, full) => {
     const cn = cone(Xc);
     const Ds = lens.D;
-    if (!cn || !(Ds > 0) || !isFinite(cn.Dz)) return;   // (a sensor at or behind the lens would step the loops below forever)
+    if (!cn || !(Ds > 0) || !(cn.Dz > 0) || !isFinite(cn.Dz)) return;   // (a sensor at or behind the lens would step the loops below forever)
     // circles step apart on both sides of the sensor: half the defocus, so the sharp image falls on one of them
     // (or a sliver of D when in focus, so they still show the cone narrowing to the sensor and opening past it)
     const step = Math.max(Math.abs(Ds - cn.Dz) / 2, 0.004 * Ds);
@@ -989,6 +1012,33 @@ const FOCUS_RANGE = [0.1, 500];   // metres
   };
   function dragTo(e) {
     if (!dragging) return;   // released before this frame
+    if (dragging.startsWith('turn:') && grab.slide) {
+      // Shift-drag: slide the standard square to the rail, following the pointer across the plane through its centre;
+      // the top and bottom dots raise and lower it, the side ones shift it
+      // (in the drawing's millimetres: the inside is drawn enlarged about the lens centre, so a lens moved this way
+      // shows mostly as the sensor sliding the other way)
+      const h = turnHandles().find(t => 'turn:' + t.name === dragging);
+      if (!h) return;
+      camGroup.updateMatrixWorld();
+      const M = camGroup.matrixWorld, ray = pointerRay(e);
+      const O = new THREE.Vector3(...h.centre).applyMatrix4(M), n = new THREE.Vector3(...lens.railDir).transformDirection(M);
+      const den = n.dot(ray.direction);
+      if (Math.abs(den) < 1e-4) return;   // the plane seen edge on
+      const t = n.dot(O.clone().sub(ray.origin)) / den;
+      if (!(t > 0)) return;
+      const hit = ray.origin.clone().addScaledVector(ray.direction, t);
+      if (grab.prev) {
+        const d = hit.clone().sub(grab.prev), k = inside();
+        const dx = d.dot(new THREE.Vector3(...lens.bodyX).transformDirection(M)) / k;
+        const dy = d.dot(new THREE.Vector3(...lens.swingAxis).transformDirection(M)) / k;   // the body's y, down
+        const lim = shiftLimit(), mv = (key, dmm) => { P[key] = Math.round(Math.max(-lim, Math.min(lim, P[key] + dmm)) * 10) / 10; };
+        const front = h.name.startsWith('front');
+        // the top and bottom dots raise and lower the standard, the side ones shift it
+        moveStandard(() => h.name.includes('tilt') ? mv(front ? 'rise' : 'rRise', -dy) : mv(front ? 'shift' : 'rShift', dx));
+      }
+      grab.prev = hit;
+      return;
+    }
     if (dragging.startsWith('turn:')) {
       // how fast the edge moves on screen per radian of turn, and so how far the pointer's move turns it
       const h = turnHandles().find(t => 'turn:' + t.name === dragging);
@@ -1037,10 +1087,10 @@ const FOCUS_RANGE = [0.1, 500];   // metres
   worldEl.addEventListener('pointerdown', e => {
     if (e.target !== renderer.domElement || !(dragging = nearHandle(e) || (onLabel(e) ? 'aperture' : null))) return;
     controls.enabled = false;
-    grab = dragging === 'aperture' || dragging.startsWith('turn:') ? { x: e.clientX, y: e.clientY, N: P.fnum } : null;
+    grab = dragging === 'aperture' || dragging.startsWith('turn:') ? { x: e.clientX, y: e.clientY, N: P.fnum, slide: e.shiftKey, prev: null } : null;
     if (dragging === 'camera') dragTo(e);   // where it was taken, so it moves with the pointer without a jump
     renderer.domElement.setPointerCapture(e.pointerId);
-    renderer.domElement.style.cursor = 'grabbing';
+    renderer.domElement.style.cursor = grab && grab.slide ? 'move' : 'grabbing';
   }, true);
   renderer.domElement.addEventListener('pointermove', e => {
     if (!dragging) { renderer.domElement.style.cursor = e.buttons ? '' : nearHandle(e) ? 'grab' : onLabel(e) ? 'ew-resize' : ''; return; }
@@ -1267,7 +1317,7 @@ gui.add(presetSel, 'preset', ['', ...Object.keys(PRESETS)]).name('preset').onCha
     const i = sharpImage(Cam.add(Cam.mulv(cam.R, [0, 8, 0]), cam.t));
     if (i) P.focus = +lens.focusForRail(lens.railThrough(i.P)).toPrecision(4);
   }
-  showMode(); update(); viewOverview();
+  showMode(); applyShiftLimit(); update(); viewOverview();
 });
 gui.add(P, 'mode', ['normal camera', 'view camera']).name('camera').onChange(() => { showMode(); update(); });
 
@@ -1287,22 +1337,28 @@ fLens.add({ go: () => { P.focus = +(Lens.hyperfocal(lens.f, lens.N, lens.coc) / 
 fLens.add(P, 'sensorW', SENSORS).name('sensor').onChange(w => {
   if (SENSOR_RES[w]) { P.resolution = SENSOR_RES[w]; [P.W, P.H] = RESOLUTIONS[P.resolution]; }
   P.coc = cocForSensor();
-  update();
+  applyShiftLimit(); update();
 });
-addMapped(fLens, P, 'sensorW', 2, 300, 0.1, LOG_MAP).name('sensor width (mm)').onChange(update);
+addMapped(fLens, P, 'sensorW', 2, 300, 0.1, LOG_MAP).name('sensor width (mm)').onChange(() => { applyShiftLimit(); update(); });
 fLens.add(P, 'resolution', Object.keys(RESOLUTIONS)).name('resolution').onChange(v => { [P.W, P.H] = RESOLUTIONS[v]; update(); });
 
 addMapped(gui, P, 'coc', 0.002, 0.5, 0.001, LOG_MAP).name('circle of confusion (mm)').onChange(update);
 
 // the standards: shown only for the view camera, and taken as zero for the normal one
+// the rise / shift sliders follow the format's limit; a new format clamps them into it
+const shiftCtrls = [];
+function applyShiftLimit() {
+  const lim = shiftLimit();
+  for (const c of shiftCtrls) { c.min(-lim).max(lim); P[c.property] = Math.max(-lim, Math.min(lim, P[c.property])); c.updateDisplay(); }
+}
 const fFront = gui.addFolder('View camera: front standard (lens)');
-fFront.add(P, 'rise', -80, 80, 0.1).name('rise / fall (mm)').onChange(() => moveStandard());
-fFront.add(P, 'shift', -80, 80, 0.1).name('shift (mm)').onChange(() => moveStandard());
+shiftCtrls.push(fFront.add(P, 'rise', -shiftLimit(), shiftLimit(), 0.1).name('rise / fall (mm)').onChange(() => moveStandard()));
+shiftCtrls.push(fFront.add(P, 'shift', -shiftLimit(), shiftLimit(), 0.1).name('shift (mm)').onChange(() => moveStandard()));
 addMapped(fFront, P, 'tilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(() => moveStandard());
 addMapped(fFront, P, 'swing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(() => moveStandard());
 const fRear = gui.addFolder('View camera: rear standard (sensor)');
-fRear.add(P, 'rRise', -80, 80, 0.1).name('rise / fall (mm)').onChange(() => moveStandard());
-fRear.add(P, 'rShift', -80, 80, 0.1).name('shift (mm)').onChange(() => moveStandard());
+shiftCtrls.push(fRear.add(P, 'rRise', -shiftLimit(), shiftLimit(), 0.1).name('rise / fall (mm)').onChange(() => moveStandard()));
+shiftCtrls.push(fRear.add(P, 'rShift', -shiftLimit(), shiftLimit(), 0.1).name('shift (mm)').onChange(() => moveStandard()));
 addMapped(fRear, P, 'rTilt', -30, 30, 0.01, symPowMap(2)).name('tilt (°, + top forward)').onChange(() => moveStandard());
 addMapped(fRear, P, 'rSwing', -30, 30, 0.01, symPowMap(2)).name('swing (°, + to the right)').onChange(() => moveStandard());
 fRear.add({ go: () => moveStandard(() => Object.assign(P, ZERO)) }, 'go').name('zero all the movements');
@@ -1340,6 +1396,7 @@ fView.add(P, 'showDofImage').name('near and far DoF planes, behind the lens').on
 fView.add(P, 'showCone').name('light cone of the selected vertex').onChange(update);
 fView.add(P, 'allCones').name('cones from every vertex of the object').onChange(update);
 fView.add(P, 'imageSpace').name('objects behind the lens, where they are sharp').onChange(update);
+fView.add(P, 'showShift').name('reach of rise / fall and shift (view camera)').onChange(update);
 // the one setting for the picture rather than the 3D view, set apart by a line
 fView.add(P, 'blurOutlines').name('picture: outline the blur shapes of the vertices').onChange(update).domElement.classList.add('apart');
 
@@ -1347,7 +1404,7 @@ gui.add({ reset: () => {
   const keep = clone(DEFAULTS);
   for (const k of Object.keys(keep)) P[k] = keep[k];   // P.show copies into the object the checkboxes hold
   presetSel.preset = '';
-  showMode(); update(); viewOverview();
+  showMode(); applyShiftLimit(); update(); viewOverview();
 } }, 'reset').name('reset everything');
 // P.show must stay the object the checkboxes are bound to
 {

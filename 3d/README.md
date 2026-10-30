@@ -10,9 +10,12 @@ Open `3d/index.html` in a browser (double-click, or `firefox 3d/index.html`). It
 Three.js and the lil-gui control panel are loaded from the jsDelivr CDN, so the first load
 needs network access. No build step.
 
-Controls: left-drag orbits, right-drag pans, wheel zooms. The panel on the right has the
-camera controls and a few presets. The readout bottom-left shows the on-axis focus distance,
-the angle of the plane of sharp focus, and the hinge distance J.
+Controls: left-drag orbits, right-drag pans, wheel zooms. Drag the focus point on the lens axis to focus. With the
+view camera, small dots on each standard's frame turn it: drag the top or bottom one to tilt, a side one to swing,
+about the chosen pivot; with Shift, drag the top or bottom one to raise or lower the standard and a side one to
+shift it ("reach of rise / fall and shift" under Display shows how far it goes). The panel on the right has the
+camera controls and a few presets. The readout bottom-left shows the on-axis focus distance, the angle of the plane
+of sharp focus, and the hinge distance J.
 
 ## What is drawn
 

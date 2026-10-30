@@ -27,10 +27,12 @@ sensor, so their circles grow with the distance from the focus and with the aper
   apart behind the lens) against a 24 mm on full frame up close (deep depth of field, the images within half a
   millimetre), the standard 50 mm f/1.4, and a 4×5″ view camera with the lens tilted to bring the ground into focus.
 - **View camera**: the "camera" switch turns on a view camera's standards (their controls, below the lens's, stay
-  hidden for the normal camera, where the movements count as zero): the lens (front) and the sensor (rear) each
-  rise, fall and shift across, and tilt and swing. Besides the sliders, small dots on the lens board's and the
-  sensor's edges turn them: drag the top or bottom one to tilt, the left or right one to swing. Moving one
-  standard leaves the other in place, each turning about its own centre; the focus distance follows.
+  hidden for the normal camera, where the movements count as zero): the lens (front) and the sensor (rear) each rise,
+  fall and shift across, and tilt and swing. Besides the sliders, small dots on the lens board's and the sensor's
+  edges turn them: drag the top or bottom one to tilt, the left or right one to swing; with Shift, the top or bottom
+  one raises or lowers the standard and a side one shifts it ("reach of rise / fall and shift" in the View folder
+  shows how far it goes: 60 % of the format's width either way). Moving one standard leaves the other in place, each
+  turning about its own centre; the focus distance follows.
 - **Maths**: the thin lens (v from 1/f = 1/s + 1/v, the focal length in pixels fx = v / pixel size, and the focus
   breathing that follows), the depth of field (hyperfocal distance, near and far limits), and the blur of the
   selected vertex worked out step by step.
